@@ -2484,9 +2484,9 @@ function renderGetStarted(){
   if(off||_hasAnyTxns(5)){el.innerHTML='';return;}
   const hasBudget=Object.values(S.budgets||{}).some(v=>+v>0);
   const steps=[
-    {done:getCashAccounts().length>0,t:'Add your bank accounts',s:'Accounts → Cash → + Add accounts',go:"navTo('accounts')"},
-    {done:_hasAnyTxns(1),t:'Log your first expense',s:'Tap the round + button, or type it in Quick add',go:"openExpModal('expense')"},
-    {done:hasBudget,t:'Set a monthly budget',s:'Settings → Budget',go:"navTo('settings');settTab('budget',document.querySelectorAll('#pg-settings .tabs .tab')[1])"},
+    {done:getCashAccounts().length>0,t:'Add your bank accounts',s:'Tap here and the app shows you how',go:"startTour('account')"},
+    {done:_hasAnyTxns(1),t:'Log your first expense',s:'Tap here and the app shows you how',go:"startTour('spend')"},
+    {done:hasBudget,t:'Set a monthly budget',s:'Tap here and the app shows you how',go:"startTour('budget')"},
     {done:typeof DATA_MODE!=='undefined'&&DATA_MODE==='cloud',t:'Create an account to sync',s:'Use it on all your devices and never lose your data',go:"acctShowWhy()"},
   ];
   if(steps.every(x=>x.done)){el.innerHTML='';return;}
@@ -8511,13 +8511,14 @@ function renderSettGuide(){
   el.innerHTML=`
     <div class="exp-card" style="margin-top:10px">
       <div class="exp-card-title">How to use apowo</div>
-      <div class="exp-card-sub" style="margin-bottom:0">Tap a section to open it.</div>
+      <div class="exp-card-sub" style="margin-bottom:0">Tap a section to open it, or let the app show you, step by step, on the real screens:</div>
+      <div class="gd-tours">${Object.entries(TOURS).map(([id,t])=>`<button class="gd-tour" onclick="startTour('${id}')"><span class="pl" aria-hidden="true">▶</span>${t.title}</button>`).join('')}</div>
     </div>
     ${sec('Quick start',`
       <ol>
-        <li><b>Add your accounts.</b> Go to <b>Accounts → Cash → + Add accounts</b>, add your banks and cash from the logo list, then tap <b>✎</b> beside each one to enter what's in it today.</li>
-        <li><b>Set a budget.</b> In <b>Settings → Budget</b>, enter a monthly amount for each category you care about and tap <b>Save for every month</b>. It applies to every month until you change it.</li>
-        <li><b>Record spending as it happens.</b> Tap the round <b>+</b> button, enter the amount, pick a category, what you spent it on, and the bank it came from. The balance of that bank goes down automatically.</li>
+        <li><b>Add your accounts.</b> Go to <b>Accounts → Cash → + Add accounts</b>, add your banks and cash from the logo list, then tap <b>✎</b> beside each one to enter what's in it today. <span class="gd-show" onclick="startTour('account')">▶ Show me</span></li>
+        <li><b>Set a budget.</b> In <b>Settings → Budget</b>, enter a monthly amount for each category you care about and tap <b>Save for every month</b>. It applies to every month until you change it. <span class="gd-show" onclick="startTour('budget')">▶ Show me</span></li>
+        <li><b>Record spending as it happens.</b> Tap the round <b>+</b> button, enter the amount, pick a category, what you spent it on, and the bank it came from. The balance of that bank goes down automatically. <span class="gd-show" onclick="startTour('spend')">▶ Show me</span></li>
         <li><b>Record income</b> the same way, using the <b>Income</b> button at the top of the + form.</li>
         <li><b>Check Home</b> to see where your money is going and how you're doing against your budget.</li>
       </ol>
@@ -9639,7 +9640,7 @@ function renderSettData(){
         <button class="btn btn-g btn-sm" style="flex:1" onclick="openGuide()">Open the guide</button>
         <button class="btn btn-g btn-sm" style="flex:1" onclick="reportProblem()">Report a problem</button>
       </div>
-      <div style="font-size:0.6875rem;color:var(--text3);line-height:1.7;margin-top:10px"><div>Version: v4.9.6</div><div style="color:var(--text3);margin-top:4px">v4.9.6: Choose the account when posting a repeating bill; investment shares no longer show 0% at the start of a month.</div></div>
+      <div style="font-size:0.6875rem;color:var(--text3);line-height:1.7;margin-top:10px"><div>Version: v4.9.7</div><div style="color:var(--text3);margin-top:4px">v4.9.7: Show me walkthroughs: the Guide and the Getting started list can now walk you through adding accounts, recording spending, setting a budget and Say it, step by step on the real screens.</div></div>
     </div>
     <details class="sett-adv" id="sett-adv"${_settAdvOpen?' open':''} ontoggle="_settAdvOpen=this.open">
       <summary>Advanced<span>AI keys, net worth, exchange rates, balance audit</span></summary>
@@ -9655,6 +9656,180 @@ function openGuide(){
   navTo('settings');
   const b=[...document.querySelectorAll('#pg-settings .tabs .tab')].find(t=>t.textContent.trim()==='Guide');
   if(b) settTab('guide',b);
+}
+
+// ── "Show me" walkthroughs (v4.9.7) ─────────────────────────────────────────
+// A tour dims the screen, cuts a lit hole around the real button or field the
+// user needs next, and explains it in a bubble. The user does the real thing
+// (so the account, expense or budget they make is kept). Taps outside the hole
+// are blocked so the user can't wander off mid-tour; "End" always exits.
+// Steps: {el, text, go?, tap?, done?, check?, miss?}
+//   el    selector string or function returning the element to light up
+//         (none: a closing message in the middle of the screen)
+//   go    runs once when the step starts (e.g. open the right tab)
+//   tap   the user taps the lit element; the tour moves on when done() turns
+//         true, or, without done(), on a tap inside the element
+//   check for steps with a Next button: returns an error text, or '' to go on
+const _pgOn=p=>document.getElementById('pg-'+p)?.classList.contains('active');
+const _modOn=id=>document.getElementById(id)?.classList.contains('open');
+const _ovOn=()=>{const o=document.getElementById('acct-ov');return !!o&&o.style.display==='block';};
+const TOURS={
+  account:{title:'Add your accounts',steps:[
+    {el:'.bn[data-pg="accounts"]',tap:true,done:()=>_pgOn('accounts'),text:'Tap <b>Accounts</b> in the menu at the bottom.'},
+    {el:'#acct-cash button[onclick^="suOpenPicker"]',go:()=>{const t=document.querySelector('#pg-accounts .tabs .tab');if(t&&!t.classList.contains('active'))t.click();},tap:true,done:_ovOn,text:'Tap <b>+ Add accounts</b>.'},
+    {el:'#acct-ov .su-grid',check:()=>document.querySelector('#acct-ov .su-tile.on')?'':'Tap at least one bank or wallet first.',text:'Tap each bank or wallet you use. A selected one is highlighted. Not listed? You can add your own just below the list.'},
+    {el:'#acct-ov button[onclick^="suPickerDone"]',tap:true,done:()=>!_ovOn(),text:'Tap <b>Add selected</b>.'},
+    // Prefer an account with no balance yet (the one just added).
+    {el:()=>{const b=[...document.querySelectorAll('#cash-breakdown .acct-edit-btn')];return b.find(x=>(x.previousElementSibling?.textContent||'').trim()==='—')||b[0];},tap:true,done:()=>_modOn('acct-modal'),text:'Tap <b>✎</b> beside an account to enter what\'s in it today.'},
+    {el:'#acct-bal',text:'Type the balance it has today. You can write 250k or 250,000.'},
+    {el:'#acct-modal button[onclick="saveAcctEdit()"]',tap:true,done:()=>!_modOn('acct-modal'),text:'Tap <b>Save</b>.'},
+    {text:'Done! Do the same with <b>✎</b> for each of your other accounts. From now on, every expense you record takes money out of the account you pick.'},
+  ]},
+  spend:{title:'Record spending',steps:[
+    {el:'#fab-add',go:()=>{if(_pgOn('forecast'))navTo('dashboard');},tap:true,done:()=>_modOn('exp-modal'),text:'Tap the round <b>+</b> button. It\'s on every page.'},
+    {el:'#e-amt',check:()=>numVal('e-amt')>0?'':'Type an amount first.',text:'Type how much you spent. <b>5k</b>, <b>2,500</b> and even <b>1500+300</b> all work.'},
+    {el:'#e-cat',text:'Pick a <b>category</b>, like Food or Domestic.'},
+    {el:'#e-payee-sel',check:()=>{const v=document.getElementById('e-payee-sel')?.value||'';
+      if(!v||v.startsWith('--'))return 'Pick what you spent it on first.';
+      if(v==='+ Add new'&&!document.getElementById('e-payee-new')?.value.trim())return 'Type a name for it in the box below first.';
+      return '';},text:'Pick what you spent it on. Choose <b>+ Add new</b> to name something new, like Lunch or Spar.'},
+    {el:'#e-bank',text:'Pick the account the money came from. Its balance goes down by this amount on its own.'},
+    {el:'#e-save',tap:true,done:()=>!_modOn('exp-modal'),text:'Check the date, then tap <b>Save</b>.'},
+    {text:'Saved! You\'ll find it on the <b>Expenses</b> page. Use the same <b>+</b> for income and for moving money between accounts: switch the type at the top of the form.'},
+  ]},
+  budget:{title:'Set a budget',steps:[
+    {el:'.bn[data-pg="settings"]',tap:true,done:()=>_pgOn('settings'),text:'Tap <b>Settings</b> in the menu at the bottom.'},
+    {el:'#pg-settings .tabs .tab[onclick*="\'budget\'"]',tap:true,done:()=>document.getElementById('sett-budget')?.style.display!=='none',text:'Tap the <b>Budget</b> tab.'},
+    {el:'#sett-budget input[id^="b-"]',text:'Enter how much you want to spend each month on this category. Do the same for the others you care about and leave the rest empty.'},
+    {el:'#sett-budget button[onclick="copyActualSpend()"]',text:'Not sure what to put? This fills in what you actually spent last month, as a starting point.'},
+    {el:'#sett-budget button[onclick="saveBudget(\'std\')"]',tap:true,text:'Tap <b>Save for every month</b>. It applies to every month until you change it.'},
+    {text:'Your budget is set. Home shows how each category is doing against it as the month goes on.'},
+  ]},
+  say:{title:'Say it',steps:[
+    {el:'#fab-say',go:()=>{if(_pgOn('forecast'))navTo('dashboard');},tap:true,done:()=>_modOn('voice-modal'),text:'Tap the <b>microphone</b> button. It starts listening straight away.'},
+    {el:'#vc-mic',text:'Say what happened, like <b>“5k lunch from GTB yesterday”</b>. Your words appear below as you speak. Tap the microphone to start or stop.'},
+    {el:'#voice-modal .vc-box',tap:true,done:()=>_modOn('exp-modal'),miss:'Microphone not working? Type it in the box instead.',text:'You can also type it here. When it reads right, tap <b>✦</b>.'},
+    {el:'#e-save',tap:true,done:()=>!_modOn('exp-modal'),text:'The form is filled in for you. Check it, fix anything that\'s wrong, then tap <b>Save</b>.'},
+    {text:'That\'s it. Say it understands spending, income (“received 250k salary into Access”) and transfers (“moved 20k from Opay to Kuda”).'},
+  ]},
+};
+let _tour=null;
+function startTour(id){
+  const t=TOURS[id];if(!t)return;
+  endTour();
+  const L=document.createElement('div');
+  L.id='tour';
+  L.innerHTML=`<svg class="tour-dim" aria-hidden="true"><path fill-rule="evenodd"/></svg><div class="tour-blk"></div><div class="tour-blk"></div><div class="tour-blk"></div><div class="tour-blk"></div>
+    <div class="tour-hole"></div><div class="tour-tap"></div>
+    <div class="tour-tip" role="dialog" aria-live="polite" aria-label="${esc(t.title)}"><div class="tour-hd"><span class="tour-t"></span><span class="tour-n"></span></div><div class="tour-x"></div><div class="tour-err"></div><div class="tour-bt"></div></div>`;
+  document.body.appendChild(L);
+  L.querySelectorAll('.tour-blk').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();e.preventDefault();_tourNudge();}));
+  _tour={id,t,i:-1,L,el:null,timer:null,wait:0,
+    onKey:e=>{if(e.key==='Escape')endTour();},
+    onClick:e=>{const s=_tour&&_tour.t.steps[_tour.i];if(s&&s.tap&&!s.done&&_tour.el&&_tour.el.contains(e.target))setTimeout(()=>{if(_tour&&_tour.t.steps[_tour.i]===s)_tourGo(_tour.i+1);},250);}};
+  document.addEventListener('keydown',_tour.onKey);
+  document.addEventListener('click',_tour.onClick,true);
+  _tour.timer=setInterval(_tourTick,150);
+  L.querySelector('.tour-t').textContent=t.title;
+  _tourGo(0);
+}
+function endTour(){
+  if(!_tour)return;
+  clearInterval(_tour.timer);
+  document.removeEventListener('keydown',_tour.onKey);
+  document.removeEventListener('click',_tour.onClick,true);
+  _tour.L.remove();_tour=null;
+}
+function _tourGo(i){
+  const T=_tour;if(!T)return;
+  if(i>=T.t.steps.length){endTour();return;}
+  T.i=i;T.el=null;T.wait=0;
+  const s=T.t.steps[i],L=T.L;
+  if(s.go)try{s.go();}catch(e){console.warn('tour step',e);}
+  const real=T.t.steps.filter(x=>x.el).length,n=T.t.steps.slice(0,i+1).filter(x=>x.el).length;
+  L.querySelector('.tour-n').textContent=s.el?`${n} of ${real}`:'';
+  L.querySelector('.tour-x').innerHTML=s.text;
+  L.querySelector('.tour-err').textContent='';
+  const last=i===T.t.steps.length-1;
+  L.querySelector('.tour-bt').innerHTML=last
+    ?`<button class="btn btn-p btn-sm" onclick="endTour()">Done</button>`
+    :`<button class="btn btn-g btn-sm" onclick="endTour()">End</button>${s.tap?'':`<button class="btn btn-p btn-sm" onclick="_tourNext()">Next</button>`}`;
+  L.classList.toggle('tour-free',!s.el);
+  L.classList.toggle('tour-tapstep',!!s.tap);
+  _tourTick();
+}
+function _tourNext(){
+  const T=_tour;if(!T)return;
+  const s=T.t.steps[T.i];
+  const err=s.check?s.check():'';
+  if(err){T.L.querySelector('.tour-err').textContent=err;_tourNudge();return;}
+  _tourGo(T.i+1);
+}
+function _tourNudge(){
+  const tip=_tour&&_tour.L.querySelector('.tour-tip');if(!tip)return;
+  tip.classList.remove('tour-shake');void tip.offsetWidth;tip.classList.add('tour-shake');
+  haptic(15);
+}
+function _tourFind(s){
+  const el=typeof s.el==='function'?s.el():document.querySelector(s.el);
+  if(!el)return null;
+  const r=el.getBoundingClientRect();
+  return r.width||r.height?el:null;
+}
+// Runs every 150 ms: moves on when a step's condition is met, finds the
+// element (it may appear only after an animation), and keeps the hole, the
+// tap marker and the bubble on it while the page scrolls or the keyboard opens.
+function _tourTick(){
+  const T=_tour;if(!T)return;
+  const s=T.t.steps[T.i],L=T.L;
+  if(s.tap&&s.done){let ok=false;try{ok=s.done();}catch(e){}if(ok){_tourGo(T.i+1);return;}}
+  const vv=window.visualViewport,vw=vv?vv.width:innerWidth,vh=vv?vv.height:innerHeight,oy=vv?vv.offsetTop:0;
+  const hole=L.querySelector('.tour-hole'),tap=L.querySelector('.tour-tap'),tip=L.querySelector('.tour-tip'),blk=L.querySelectorAll('.tour-blk');
+  const place=(b,x,y,w,h)=>{b.style.left=x+'px';b.style.top=y+'px';b.style.width=Math.max(0,w)+'px';b.style.height=Math.max(0,h)+'px';};
+  // No element to light up: dim the whole screen (a zero-size hole still
+  // casts the shadow) and centre the bubble.
+  // The dimmed layer is one SVG path: the whole screen, minus a rounded
+  // rectangle around the element (even-odd fill leaves the hole clear).
+  const W=innerWidth,H=innerHeight,dim=L.querySelector('.tour-dim path');
+  const cut=(x,y,w,h)=>{const r=Math.min(12,w/2,h/2);
+    dim.setAttribute('d',`M0 0H${W}V${H}H0Z`+(w>0?`M${x+r} ${y}H${x+w-r}A${r} ${r} 0 0 1 ${x+w} ${y+r}V${y+h-r}A${r} ${r} 0 0 1 ${x+w-r} ${y+h}H${x+r}A${r} ${r} 0 0 1 ${x} ${y+h-r}V${y+r}A${r} ${r} 0 0 1 ${x+r} ${y}Z`:''));};
+  const dimAll=()=>{place(blk[0],0,0,W,H);[1,2,3].forEach(k=>place(blk[k],0,0,0,0));
+    cut(0,0,0,0);hole.style.opacity='0';tap.style.opacity='0';};
+  if(!s.el){
+    dimAll();
+    tip.style.left=Math.max(16,(vw-tip.offsetWidth)/2)+'px';tip.style.top=(oy+Math.max(16,(vh-tip.offsetHeight)/2))+'px';
+    return;
+  }
+  if(!T.el||!T.el.isConnected||!_tourFind(s)){
+    T.el=_tourFind(s);
+    if(T.el){T.el.scrollIntoView({block:'center',behavior:'smooth'});}
+    else{
+      T.wait++;
+      if(T.wait===40){// ~6 s: the screen isn't where the tour expects
+        L.querySelector('.tour-err').textContent=s.miss||'This part isn\'t on screen right now.';
+        L.querySelector('.tour-bt').innerHTML=`<button class="btn btn-g btn-sm" onclick="endTour()">End</button><button class="btn btn-p btn-sm" onclick="_tourGo(${T.i+1})">Skip</button>`;
+      }
+      dimAll();
+      tip.style.left=Math.max(16,(vw-tip.offsetWidth)/2)+'px';tip.style.top=(oy+Math.max(16,(vh-tip.offsetHeight)/2))+'px';
+      return;
+    }
+  }
+  const r=T.el.getBoundingClientRect(),p=6;
+  const x=r.left-p,y=r.top-p,w=r.width+2*p,h=r.height+2*p;
+  place(hole,x,y,w,h);hole.style.opacity='1';cut(x,y,w,h);
+  place(blk[0],0,0,innerWidth,y);place(blk[1],0,y+h,innerWidth,innerHeight-(y+h));
+  place(blk[2],0,y,x,h);place(blk[3],x+w,y,innerWidth-(x+w),h);
+  tap.style.opacity=s.tap?'1':'0';
+  // The marker sits at the lower right like a fingertip, so it doesn't hide
+  // the label or icon the bubble talks about.
+  tap.style.left=(r.right-Math.min(r.width*0.25,14))+'px';tap.style.top=(r.bottom-Math.min(r.height*0.25,8))+'px';
+  // Bubble: below the element when there's room, else above, else on top.
+  const tw=tip.offsetWidth,th=tip.offsetHeight,g=12;
+  let top=y+h+g;
+  if(top+th>oy+vh-8)top=y-g-th;
+  if(top<oy+8)top=Math.min(oy+vh-th-8,Math.max(oy+8,y+h+g));
+  tip.style.top=top+'px';
+  tip.style.left=Math.min(vw-tw-16,Math.max(16,r.left+r.width/2-tw/2))+'px';
 }
 // "Report a problem": opens the user's own email app, addressed to the
 // developer, with the details that help reproduce a bug. No personal data
@@ -10396,7 +10571,7 @@ if('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').cat
 
 
 // ── Version check against GitHub Pages ──
-const APP_VERSION='v4.9.6';
+const APP_VERSION='v4.9.7';
 async function checkForUpdate(){
   try{
     const res=await fetch(location.origin+location.pathname+'?_='+Date.now(),{cache:'no-store'});
