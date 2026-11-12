@@ -1,0 +1,29 @@
+# Only needed if you deploy from a terminal with `npx wrangler deploy`.
+# The dashboard route in README.md does the same thing without this file.
+name = "apowo-api"
+main = "apowo-api.js"
+compatibility_date = "2026-10-01"
+
+routes = [{ pattern = "api.apowo.app", custom_domain = true }]
+
+[observability]
+enabled = true          # keeps the crash reports in Workers Logs
+
+[vars]
+DAILY_SIGNED_IN = "150"
+DAILY_SIGNED_OUT = "30"
+
+# Requests per minute per person.
+[[ratelimits]]
+name = "BURST"
+namespace_id = "1001"
+simple = { limit = 12, period = 60 }
+
+# Daily AI allowance per person. Create it first:
+#   npx wrangler kv namespace create LIMITS
+# and paste the id it prints here.
+[[kv_namespaces]]
+binding = "LIMITS"
+id = "PASTE_KV_NAMESPACE_ID"
+
+# Then: npx wrangler secret put GEMINI_KEYS

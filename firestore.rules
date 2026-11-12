@@ -1,0 +1,68 @@
+rules_version = '2';
+// apowo (v4.9) — paste into Firebase console → Firestore → Rules → Publish.
+// The uid in isAppOwner() is the owner's (Authentication → Users) — keep it
+// identical to OWNER_UID in app.js.
+//
+// ORDER MATTERS: publish this only AFTER the apowo API worker is live at
+// https://api.apowo.app (see worker/README.md). This version stops public
+// reads of publicConfig, which is where the shared Gemini key used to be; until
+// the worker answers, people without their own key would lose AI.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedInAs(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+    function isAppOwner() {
+      return request.auth != null && request.auth.uid == 'pkuOGxHr19goU9qJjmPq2f3MzEw2';
+    }
+
+    // Each user's own data. Everything except year/month is encrypted on the
+    // device before it gets here. Read and delete anything of your own
+    // (account deletion walks every collection).
+    match /users/{uid}/{doc=**} {
+      allow read, delete: if signedInAs(uid);
+    }
+
+    // Writes only into the collections the app uses (USER_COLLECTIONS in
+    // vault.js, plus meta for the wrapped keys), in the shape the vault writes:
+    // a modest number of fields, with the ciphertext under the 1 MiB doc cap.
+    // A new collection in the app needs adding here, or its writes are refused.
+    match /users/{uid}/{col}/{id} {
+      allow create, update: if signedInAs(uid)
+        && col in ['transactions', 'income', 'cashBalances', 'cashLedger',
+                   'investments', 'debtors', 'loans', 'budgets', 'transfers',
+                   'historicalSummary', 'specialBudgets', 'aiChats',
+                   'appConfig', 'meta']
+        && request.resource.data.size() <= 40
+        && (!('_enc' in request.resource.data)
+            || (request.resource.data._enc is string
+                && request.resource.data._enc.size() < 1000000));
+    }
+
+    // Password recovery: the doc id is a hash of (username, recovery code), so
+    // only someone holding the code can find it; its content is sealed under a
+    // key derived from the code. get only — never list.
+    match /recovery/{id} {
+      allow get: if true;
+      allow create: if request.auth != null
+                    && request.resource.data.uid == request.auth.uid
+                    && request.resource.data.size() <= 12;
+      allow update: if request.auth != null
+                    && resource.data.uid == request.auth.uid
+                    && request.resource.data.uid == request.auth.uid
+                    && request.resource.data.size() <= 12;
+    }
+
+    // Formerly the shared Gemini keys, readable by everyone. The key now lives
+    // in the apowo API worker; only the owner can see or change what's left.
+    match /publicConfig/{doc} {
+      allow read, write: if isAppOwner();
+    }
+
+    // Everything else — including the legacy shared collections — is closed.
+    match /{doc=**} {
+      allow read, write: if false;
+    }
+  }
+}

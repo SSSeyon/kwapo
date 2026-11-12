@@ -1,0 +1,54 @@
+{
+  "id": "/",
+  "name": "apowo",
+  "short_name": "apowo",
+  "description": "Track spending, income, savings and investments in naira and dollars. Free, works offline, and your data is encrypted on your device.",
+  "lang": "en",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#08080e",
+  "theme_color": "#08080e",
+  "categories": ["finance", "productivity"],
+  "prefer_related_applications": false,
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Add expense",
+      "short_name": "Add",
+      "url": "./?do=add",
+      "icons": [{ "src": "icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "Ask the AI analyst",
+      "short_name": "Ask AI",
+      "url": "./?do=ai",
+      "icons": [{ "src": "icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    }
+  ],
+  "screenshots": [
+    { "src": "screenshot-home.png", "sizes": "320x694", "type": "image/png", "form_factor": "narrow", "label": "Home: upcoming bills, goals and the month at a glance" },
+    { "src": "screenshot-expenses.png", "sizes": "320x694", "type": "image/png", "form_factor": "narrow", "label": "Expenses grouped by category" },
+    { "src": "screenshot-accounts.png", "sizes": "320x694", "type": "image/png", "form_factor": "narrow", "label": "Balances across banks, in naira and dollars" }
+  ]
+}

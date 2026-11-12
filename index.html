@@ -1,0 +1,803 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<!-- Content Security Policy. GitHub Pages can't send headers, so it lives here.
+     'unsafe-inline' scripts are needed for the onclick="" handlers throughout
+     the app; the policy still pins where scripts, data and frames may come
+     from. If you add a CDN or API, add its host here or the browser blocks it. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdn.sheetjs.com https://www.gstatic.com https://apis.google.com https://www.google.com/recaptcha/; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob: https://api.apowo.app; connect-src 'self' https://*.googleapis.com https://www.google.com/recaptcha/ https://apis.google.com https://open.er-api.com https://api.apowo.app https://cdn.jsdelivr.net https://cdn.sheetjs.com https://www.gstatic.com https://fonts.googleapis.com https://fonts.gstatic.com; frame-src https://www.google.com/recaptcha/ https://spendwise-d6393.firebaseapp.com; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<title>apowo: private money tracker</title>
+<meta name="description" content="apowo tracks your spending, income, savings and investments in naira and dollars. Free, works offline, and your data is encrypted on your device before it syncs.">
+<link rel="canonical" href="https://apowo.app/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="apowo">
+<meta property="og:title" content="apowo: private money tracker">
+<meta property="og:description" content="Track spending, income, savings and investments in naira and dollars. Free, offline-ready, encrypted on your device.">
+<meta property="og:url" content="https://apowo.app/">
+<meta property="og:image" content="https://apowo.app/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="The apowo money bag logo with the naira sign">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="apowo">
+<meta name="theme-color" content="#060610">
+<link rel="manifest" href="manifest.json">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link rel="preconnect" href="https://www.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<!-- defer: download in parallel without blocking the first paint; deferred
+     scripts still run in document order (these, then the app scripts at the
+     end of <body>). integrity: the browser refuses a file whose bytes change.
+     The spreadsheet library and the Sankey plugin load on first use (_LIBS in app.js). -->
+<script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js" integrity="sha384-jb8JQMbMoBUzgWatfe6COACi2ljcDdZQ2OxczGA3bGNeWe+6DChMTBJemed7ZnvJ" crossorigin="anonymous"></script>
+<script defer src="https://www.gstatic.com/firebasejs/12.19.0/firebase-app-compat.js" integrity="sha384-aUtWR1iCiOCHS8pn1nKNXMZm3I/eDrV63IXWXgE+mHHqJfYTWYV+jGk0sCXz57+U" crossorigin="anonymous"></script>
+<script defer src="https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore-compat.js" integrity="sha384-jxdN9nS+cvQavyzo/bNcMoHfxvk0kWtPAfPDRq3EQ/wvbCVLNheaVIphKWMD4/g0" crossorigin="anonymous"></script>
+<script defer src="https://www.gstatic.com/firebasejs/12.19.0/firebase-auth-compat.js" integrity="sha384-ZRqyA8Xkw0A6FmVya9A0Werzt9yjKKAp2TCzqVJjHK1O3oyb0z9jMxpkWPVoFtUm" crossorigin="anonymous"></script>
+<link rel="stylesheet" href="styles.css?v=4.9.6">
+</head>
+<body>
+<script src="boot.js?v=4.9.6"></script>
+<div id="ptr-indicator"><span class="ptr-arrow" id="ptr-arrow">↓</span><span class="ptr-label" id="ptr-label">Pull to refresh</span></div>
+<div id="sw-update-banner"><span id="sw-update-msg">A new version is available</span><button onclick="forceHardRefresh()">Update now</button><button class="sw-dismiss" onclick="this.parentElement.style.display='none'">Later</button></div>
+<div class="offl" id="offl">⚡ Offline — showing cached data</div>
+<header class="hdr">
+  <div class="hdr-logo" onclick="navTo('dashboard')" style="cursor:pointer">
+    <div class="hdr-mark"><svg viewBox="0 0 160 160" width="30" height="30" aria-hidden="true"><defs><linearGradient id="apw-g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#0d8076"/></linearGradient></defs><path d="M64 46C56 32 44 22 50 12C60 20 70 16 80 10C90 16 100 20 110 12C116 22 104 32 96 46Z M64 50C30 66 14 100 20 128C24 148 46 154 80 154C114 154 136 148 140 128C146 100 130 66 96 50Z" fill="url(#apw-g)"/><rect x="56" y="40" width="48" height="13" rx="6.5" fill="#0f766e"/><g fill="#fff"><rect x="56" y="82" width="11" height="56"/><rect x="93" y="82" width="11" height="56"/><polygon points="56,82 69.75,82 104,138 90.25,138"/><rect x="46" y="101" width="68" height="6"/><rect x="46" y="115" width="68" height="6"/></g></svg></div>
+    <div class="hdr-name">àpò<span style="color:var(--accent)">wó</span></div>
+  </div>
+  <div class="hdr-right">
+    <div class="hdr-status">
+      <div class="sync-dot" id="sync-dot"></div>
+      <span class="sync-lbl" id="sync-lbl">—</span>
+      <span id="oq-badge" style="display:none;margin-left:4px;font-size:0.6875rem;color:var(--gold);font-family:var(--mono)"></span>
+      <span class="ver-lbl" style="margin-left:3px;cursor:pointer" onclick="forceHardRefresh()" title="Tap to hard refresh">v4.9.6</span>
+    </div>
+    <button class="notif-btn" id="notif-btn" onclick="toggleNotifPanel()" aria-label="Alerts">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+      <span class="notif-badge" id="notif-badge" style="display:none">0</span>
+    </button>
+    <button class="theme-btn" id="theme-btn" onclick="toggleTheme()" aria-label="Toggle theme">
+      <span class="theme-btn-icon theme-icon-moon" id="theme-icon">🌙</span>
+    </button>
+  </div>
+</header>
+<div class="notif-panel" id="notif-panel">
+  <div class="notif-panel-hdr">
+    <span>Alerts &amp; Notifications</span>
+    <span class="notif-clear-btn" onclick="clearAllNotifs()">Clear all</span>
+  </div>
+  <div id="notif-list"><div class="notif-empty">No alerts right now</div></div>
+</div>
+<div id="notif-scrim" style="display:none;position:fixed;inset:0;z-index:199" onclick="closeNotifPanel()"></div>
+
+<div class="app"><div class="app-body" id="app-body">
+
+<!-- DASHBOARD -->
+<div class="pg active" id="pg-dashboard">
+  <div class="pg-sub" id="dash-period-label"></div>
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0">
+    <div class="pg-title" style="margin-bottom:0">Dashboard</div>
+    <div style="display:flex;gap:6px;align-items:center">
+      <button class="dash-edit-btn dash-search-btn" onclick="openGlobalSearch()" aria-label="Search every month" title="Search every month"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> Search</button>
+      <button class="dash-edit-btn" id="dash-edit-btn" onclick="toggleDashEdit()">Edit</button>
+    </div>
+  </div>
+  <div class="stale-bar" id="stale-bar" style="display:none">◷ Cached data from <span id="stale-time"></span> — syncing…</div>
+  <!-- Getting started checklist (new users only; dismissible) -->
+  <div id="dash-getstarted"></div>
+  <!-- Month in review (first days of a month; dismissible) -->
+  <div id="dash-review"></div>
+  <!-- Smart alerts (predictive spend + recurring) -->
+  <div id="dash-alerts"></div>
+  <!-- Upcoming recurring bills (shown only when something is due) -->
+  <div class="card" id="dash-recurring-card" style="display:none">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+      <div style="font-size:0.82rem;font-weight:700">Upcoming Bills</div>
+      <span class="sh-link" onclick="openRecurModal()" style="font-size:0.6875rem">Manage →</span>
+    </div>
+    <div id="dash-recurring-list"></div>
+  </div>
+  <!-- Goals (shown only when goals exist) -->
+  <div class="card" id="dash-goals-card" style="display:none">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <div style="font-size:0.82rem;font-weight:700">Goals</div>
+      <span class="sh-link" onclick="openGoalModal()" style="font-size:0.6875rem">+ New</span>
+    </div>
+    <div id="dash-goals-list" style="margin-top:4px"></div>
+  </div>
+  <!-- Period selector -->
+  <div class="period-bar">
+    <select class="period-sel" id="dash-year" aria-label="Year" onchange="dashPeriodChange()"></select>
+    <select class="period-sel" id="dash-month-sel" aria-label="Month" onchange="dashPeriodChange()"></select>
+    <select class="period-sel cur-sync" id="dash-currency" onchange="setDisplayCurrency(this.value)" title="Show amounts in">
+      <option value="NGN">₦ NGN</option>
+      <option value="USD">$ USD</option>
+      <option value="GBP">£ GBP</option>
+      <option value="NATIVE">◈ Effective</option>
+    </select>
+  </div>
+  <!-- REORDERABLE DASHBOARD CARDS -->
+  <div id="dash-cards-container">
+    <div class="dash-card-wrap" data-card="networth">
+      <div class="card nw-hero" style="cursor:pointer" onclick="drillDown('networth')">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start"><div class="clabel">Net Worth ›</div><span id="nw-eye"></span></div>
+        <div class="nw-big" id="dash-nw">—</div>
+        <div class="csub" id="dash-nw-sub"></div>
+      </div>
+    </div>
+    <div class="dash-card-wrap" data-card="stats">
+      <div class="g2" id="dash-stats"></div>
+      <div id="dash-commentary" style="font-size:0.7rem;color:var(--text2);padding:6px 0 2px;line-height:1.5;min-height:0"></div>
+    </div>
+    <div class="dash-card-wrap" data-card="recent">
+      <div class="card">
+        <div class="collapsible-hdr open" id="dash-recent-hdr" onclick="toggleCollapsible('dash-recent','dash-recent-hdr')">
+          <div style="font-size:0.82rem;font-weight:700">Recent Transactions</div>
+          <div style="display:flex;align-items:center;gap:16px">
+            <span class="sh-link" onclick="event.stopPropagation();openAllTxnsModal()" style="font-size:0.6875rem">View all →</span>
+            <span class="chevron"><svg width="20" height="12" viewBox="0 0 20 12" fill="none"><polyline points="2,2 10,10 18,2" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          </div>
+        </div>
+        <div id="dash-recent" style="margin-top:8px"></div>
+      </div>
+    </div>
+    <div class="dash-card-wrap" data-card="calendar">
+      <div class="card">
+        <div class="collapsible-hdr open" id="dash-calendar-hdr" onclick="toggleCollapsible('dash-calendar','dash-calendar-hdr')">
+          <div style="font-size:0.82rem;font-weight:700">Calendar</div>
+          <span class="chevron"><svg width="20" height="12" viewBox="0 0 20 12" fill="none"><polyline points="2,2 10,10 18,2" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        </div>
+        <div id="dash-calendar" style="margin-top:4px"></div>
+      </div>
+    </div>
+    <div class="dash-card-wrap" data-card="budget">
+      <div class="card">
+        <div class="collapsible-hdr open" id="dash-budget-hdr" onclick="toggleCollapsible('dash-cats','dash-budget-hdr')">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span style="font-size:0.82rem;font-weight:700">Spend vs Budget</span>
+            <span style="font-size:0.68rem;color:var(--text2)" id="dash-month-label"></span>
+          </div>
+          <div style="display:flex;align-items:center;gap:16px">
+            <span class="sh-link" onclick="event.stopPropagation();drillDown('budget')" style="font-size:0.6875rem">Details ›</span>
+            <span class="chevron"><svg width="20" height="12" viewBox="0 0 20 12" fill="none"><polyline points="2,2 10,10 18,2" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          </div>
+        </div>
+        <div id="dash-cats" style="margin-top:8px"></div>
+      </div>
+    </div>
+    <div class="dash-card-wrap" data-card="charts">
+      <div class="card">
+        <div class="tabs" style="margin-bottom:14px">
+          <button class="tab active" onclick="dashChartTab('cashflow',this)">Cash Flow</button>
+          <button class="tab" onclick="dashChartTab('breakdown',this)">Breakdown</button>
+          <button class="tab" onclick="dashChartTab('trend',this)">6-Month</button>
+          <button class="tab" onclick="dashChartTab('networth',this)">Net Worth</button>
+          <button class="tab" onclick="dashChartTab('trends',this)">Trends</button>
+        </div>
+        <div id="dash-tab-breakdown" style="display:none">
+          <div class="chart-btns" id="chart-btns">
+            <button class="chart-btn active" onclick="setChartType('doughnut',this)">Donut</button>
+
+            <button class="chart-btn" onclick="setChartType('bar',this)">Bar</button>
+            <button class="chart-btn" onclick="setChartType('hbar',this)">H-Bar</button>
+          </div>
+          <canvas id="cat-chart" style="max-height:220px"></canvas>
+        </div>
+        <div id="dash-tab-trend" style="display:none">
+          <canvas id="trend-chart" style="max-height:180px"></canvas>
+          <div style="display:flex;gap:12px;margin-top:8px;flex-wrap:wrap">
+            <div style="display:flex;align-items:center;gap:5px;font-size:0.6875rem;color:var(--text2)"><div style="width:8px;height:8px;border-radius:2px;background:var(--accent)"></div>Expenses</div>
+            <div style="display:flex;align-items:center;gap:5px;font-size:0.6875rem;color:var(--text2)"><div style="width:8px;height:8px;border-radius:2px;background:var(--blue);opacity:0.7"></div>Income</div>
+            <div style="display:flex;align-items:center;gap:5px;font-size:0.6875rem;color:var(--text2)"><div style="width:8px;height:8px;border-radius:2px;background:var(--gold)"></div>Savings %</div>
+          </div>
+        </div>
+        <div id="dash-tab-networth" style="display:none">
+          <canvas id="nw-trend-chart" style="max-height:160px"></canvas>
+          <div class="csub" id="nw-trend-note" style="margin-top:6px"></div>
+        </div>
+        <div id="dash-tab-cashflow">
+          <div style="position:relative;width:100%;height:260px">
+            <canvas id="cashflow-diagram"></canvas>
+          </div>
+          <div class="csub" style="text-align:center;margin-top:6px">Tap a flow to see what's behind it.</div>
+        </div>
+        <div id="dash-tab-trends" style="display:none">
+          <div class="csub" style="margin-bottom:8px">Spending per category across the last 6 months. ▲ rising vs the prior 3-month average, ▼ falling.</div>
+          <div id="cat-spark-list"></div>
+        </div>
+      </div>
+    </div>
+    <div class="dash-card-wrap" data-card="cash">
+      <div class="card" id="dash-cash-card">
+        <div class="collapsible-hdr open" id="dash-cash-hdr" onclick="toggleCollapsible('dash-cash-body','dash-cash-hdr')">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span style="font-size:0.82rem;font-weight:700">Cash</span>
+            <span class="badge bb" id="dash-cash-badge"></span>
+            <span id="dash-cash-eye"></span>
+          </div>
+          <div style="display:flex;align-items:center;gap:20px">
+            <span class="sh-link" onclick="event.stopPropagation();navTo('accounts')" style="font-size:0.6875rem">Manage →</span>
+            <span class="chevron"><svg width="20" height="12" viewBox="0 0 20 12" fill="none"><polyline points="2,2 10,10 18,2" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          </div>
+        </div>
+        <div id="dash-cash-body" style="margin-top:10px"></div>
+      </div>
+    </div>
+    <div class="dash-card-wrap" data-card="investments">
+      <div class="card" id="dash-inv-card">
+        <div class="collapsible-hdr open" id="dash-inv-hdr" onclick="toggleCollapsible('dash-inv-body','dash-inv-hdr')">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span style="font-size:0.82rem;font-weight:700">Investments</span>
+            <span class="badge bg" id="dash-inv-total"></span>
+            <span id="dash-inv-eye"></span>
+          </div>
+          <div style="display:flex;align-items:center;gap:20px">
+            <span class="sh-link" onclick="event.stopPropagation();navTo('accounts')" style="font-size:0.6875rem">Manage →</span>
+            <span class="chevron"><svg width="20" height="12" viewBox="0 0 20 12" fill="none"><polyline points="2,2 10,10 18,2" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          </div>
+        </div>
+        <div id="dash-inv-body" style="margin-top:10px">
+          <div id="dash-inv"></div>
+          <div class="abar" id="dash-abar"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- EXPENSES -->
+<div class="pg" id="pg-expenses">
+  <div class="pg-sticky">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+    <div class="pg-title" style="margin-bottom:0" id="exp-page-title">Expenses</div>
+    <select class="period-sel cur-sync" onchange="setDisplayCurrency(this.value)" title="Show amounts in" style="font-size:0.68rem;padding:4px 8px">
+      <option value="NGN">₦ NGN</option><option value="USD">$ USD</option><option value="GBP">£ GBP</option><option value="NATIVE">◈ Effective</option>
+    </select>
+  </div>
+  <div class="tabs" style="margin-bottom:8px">
+    <button class="tab active" id="exp-tab-btn" onclick="switchExpTab('expenses',this)">Expenses</button>
+    <button class="tab" id="inc-tab-btn" onclick="switchExpTab('income',this)">Income</button>
+    <button class="tab" id="special-tab-btn" onclick="switchExpTab('special',this)">Special Budget</button>
+  </div>
+  <div class="mrow" id="exp-months" style="margin-bottom:8px"></div>
+  </div>
+  <div id="exp-pane">
+    <div class="card" id="exp-summary"></div>
+    <div style="display:flex;gap:8px;margin-bottom:10px">
+      <div class="search-bar" style="flex:1">
+        <span class="search-icon">🔍</span>
+        <input type="text" id="exp-search" placeholder="Filter this month…" oninput="renderExpenses()">
+      </div>
+      <button class="btn btn-g btn-sm" onclick="openFilterDrawer()" style="flex-shrink:0;padding:8px 12px">Filter ↑</button>
+    </div>
+    <div style="display:flex;gap:6px;margin-bottom:10px">
+      <button id="exp-sort-date-btn" class="btn btn-sm btn-p" style="font-size:0.6875rem;padding:4px 10px" onclick="setExpSort('date')">By date</button>
+      <button id="exp-sort-exp-btn" class="btn btn-sm btn-g" style="font-size:0.6875rem;padding:4px 10px" onclick="setExpSort('expense')">By expense</button>
+    </div>
+    <div id="exp-list"></div>
+  </div>
+  <div id="inc-pane" style="display:none">
+    <div class="card" id="inc-summary"></div>
+    <div id="inc-interest"></div>
+    <div id="inc-list"></div>
+  </div>
+  <div id="special-pane" style="display:none"></div>
+</div>
+
+<!-- FILTER DRAWER -->
+<div class="filter-drawer" id="filter-drawer">
+  <div class="filter-scrim" onclick="closeFilterDrawer()"></div>
+  <div class="filter-panel">
+    <div class="mhdr"><div class="mtitle">Filter by Category</div><button class="mclose" onclick="closeFilterDrawer()">×</button></div>
+    <div class="filter-grid" id="filter-grid"></div>
+    <div style="margin-top:14px;display:flex;gap:8px">
+      <button class="btn btn-p btn-sm" onclick="closeFilterDrawer()">Done</button>
+      <button class="btn btn-g btn-sm" onclick="clearFilter()">Clear</button>
+    </div>
+  </div>
+</div>
+
+<!-- ACCOUNTS (Cash + Investments merged) -->
+<div class="pg" id="pg-accounts">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+    <div class="pg-title" style="margin-bottom:0">Accounts</div>
+    <select class="period-sel cur-sync" onchange="setDisplayCurrency(this.value)" title="Show amounts in" style="font-size:0.68rem;padding:4px 8px">
+      <option value="NGN">₦ NGN</option><option value="USD">$ USD</option><option value="GBP">£ GBP</option><option value="NATIVE">◈ Effective</option>
+    </select>
+  </div>
+  <div class="pg-sticky">
+  <div class="tabs">
+    <button class="tab active" onclick="acctTab('cash',this)">Cash</button>
+    <button class="tab" onclick="acctTab('invest',this)">Investments</button>
+    <button class="tab" onclick="acctTab('debtors',this)">Debtors</button>
+    <button class="tab" onclick="acctTab('loans',this)">Loans</button>
+  </div>
+  <div class="mrow" id="cash-months" style="margin-bottom:6px"></div>
+  </div>
+
+  <!-- CASH TAB -->
+  <div id="acct-cash">
+    <div class="card" id="cash-summary"></div>
+    <div class="card"><div class="clabel" style="margin-bottom:2px">Balance by Account</div><div class="csub" style="margin-bottom:8px">Tap an account to see its history, or ✎ to edit it.</div><div id="cash-breakdown"></div></div>
+
+    <div style="display:flex;gap:8px;margin-bottom:10px">
+      <button class="btn btn-g" style="flex:1" onclick="openExpModal('transfer')">⇄ Transfer</button>
+      <button class="btn btn-g" style="flex:1" onclick="openXfrHistory()">Transfer history</button>
+    </div>
+    <button class="btn btn-g btn-full" style="margin-bottom:10px" onclick="suOpenPicker('bank')">+ Add accounts</button>
+  </div>
+
+  <!-- INVESTMENTS TAB -->
+  <div id="acct-invest" style="display:none">
+    <div class="tabs" style="margin-top:0">
+      <button class="tab active" onclick="invTab('current',this)">Current</button>
+      <button class="tab" onclick="invTab('trend',this)">Trend</button>
+    </div>
+    <div id="inv-current-2">
+      <div class="card" id="inv-total-2"></div>
+      <div id="inv-platforms-2"></div>
+      <div class="card" id="inv-alloc-2" style="display:none">
+        <div class="clabel" style="margin-bottom:8px">Allocation</div>
+        <div class="abar" id="inv-abar-2"></div>
+        <div style="display:flex;flex-wrap:wrap;gap:7px;margin-top:8px" id="inv-legend-2"></div>
+      </div>
+      <div id="inv-edit-fields-2"></div>
+      <div id="inv-save-btn-2" style="display:none;padding:0 0 8px">
+        <button class="btn btn-p btn-full" style="font-weight:700" onclick="saveInvFromEdit()">Save Balances</button>
+      </div>
+    </div>
+    <div id="inv-trend-2" style="display:none">
+      <div class="card"><div class="clabel" style="margin-bottom:12px">Portfolio Growth</div><canvas id="inv-chart-2" style="max-height:200px"></canvas></div>
+    </div>
+  </div>
+
+  <!-- DEBTORS TAB -->
+  <div id="acct-debtors" style="display:none">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <div class="g2" id="debtor-stats" style="flex:1;margin-bottom:0"></div>
+      <button class="btn btn-p btn-sm" style="margin-left:10px;flex-shrink:0" onclick="openDebMod()">+ Add</button>
+    </div>
+    <div id="debtor-list"></div>
+  </div>
+
+  <!-- LOANS TAB -->
+  <div id="acct-loans" style="display:none">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <div class="g2" id="loan-stats" style="flex:1;margin-bottom:0"></div>
+      <button class="btn btn-p btn-sm" style="margin-left:10px;flex-shrink:0" onclick="openLoanMod()">+ Add</button>
+    </div>
+    <div id="loan-list"></div>
+  </div>
+</div>
+
+<!-- FORECAST -->
+<div class="pg" id="pg-forecast">
+  <div class="pg-sticky">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+    <div class="pg-title" style="margin-bottom:0">AI/Analytics</div>
+    <select class="period-sel cur-sync" onchange="setDisplayCurrency(this.value)" title="Show amounts in" style="font-size:0.68rem;padding:4px 8px">
+      <option value="NGN">₦ NGN</option><option value="USD">$ USD</option><option value="GBP">£ GBP</option><option value="NATIVE">◈ Effective</option>
+    </select>
+  </div>
+  <div class="tabs" style="margin-bottom:6px">
+    <button class="tab active" id="proj-tab-ai" onclick="projTab('ai',this)">AI ✦</button>
+    <button class="tab" onclick="projTab('insights',this)">Insights</button>
+    <button class="tab" onclick="projTab('treasury',this)">Treasury</button>
+    <button class="tab" onclick="projTab('history',this)">History</button>
+  </div>
+  </div>
+  <div id="proj-insights" style="display:none"></div>
+  <div id="proj-treasury" style="display:none"></div>
+  <div id="proj-history" style="display:none"></div>
+
+  <div id="proj-ai"></div>
+</div>
+
+<!-- SETTINGS -->
+<div class="pg" id="pg-settings">
+  <div class="pg-sticky">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+    <div class="pg-title" style="margin-bottom:0">Settings</div>
+    <select class="period-sel cur-sync" onchange="setDisplayCurrency(this.value)" title="Show amounts in" style="font-size:0.68rem;padding:4px 8px">
+      <option value="NGN">₦ NGN</option><option value="USD">$ USD</option><option value="GBP">£ GBP</option><option value="NATIVE">◈ Effective</option>
+    </select>
+  </div>
+  <div class="tabs" style="margin-bottom:6px">
+    <button class="tab active" onclick="settTab('data',this)">Data</button>
+    <button class="tab" onclick="settTab('budget',this)">Budget</button>
+    <button class="tab" onclick="settTab('export',this)">Export</button>
+    <button class="tab" onclick="settTab('guide',this)">Guide</button>
+  </div>
+  </div>
+  <div id="sett-data"></div>
+  <div id="sett-budget" style="display:none"></div>
+  <div id="sett-export" style="display:none"></div>
+  <div id="sett-guide" style="display:none"></div>
+</div>
+
+</div></div>
+
+<nav class="bnav">
+  <div class="bn active" data-pg="dashboard" onclick="navTo('dashboard')"><div class="bn-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9v11h5v-6h4v6h5V9"/></svg></div>Home</div>
+  <div class="bn" data-pg="expenses" onclick="navTo('expenses')"><div class="bn-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 2.5h12V21l-3-1.8-3 1.8-3-1.8L6 21z"/><path d="M9.5 7.5h5M9.5 11h5M9.5 14.5h3"/></svg></div>Expenses</div>
+  <div class="bn" data-pg="accounts" onclick="navTo('accounts')"><div class="bn-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 9.5 12 4l9 5.5"/><path d="M4 20.5h16"/><path d="M6.5 11v6.5M10.5 11v6.5M13.5 11v6.5M17.5 11v6.5"/></svg></div>Accounts</div>
+  <div class="bn" data-pg="forecast" onclick="navTo('forecast')" style="letter-spacing:-0.01em"><div class="bn-icon">✦</div>AI/Analytics</div>
+  <div class="bn" data-pg="settings" onclick="navTo('settings')"><div class="bn-icon">⚙&#xFE0E;</div>Settings</div>
+</nav>
+
+<button class="fab" id="fab">+</button>
+<div class="toast" id="toast"></div>
+
+<!-- DRILLDOWN MODAL -->
+<div class="mbackdrop" id="drill-modal">
+  <div class="modal" onclick="event.stopPropagation()" style="max-height:85vh">
+    <div class="mhdr"><div class="mtitle" id="drill-title">Detail</div><button class="mclose" onclick="closeMod('drill-modal')">×</button></div>
+    <div id="drill-body" style="overflow-y:auto;max-height:calc(85vh - 100px);padding-bottom:8px"></div>
+    <button class="btn btn-g btn-full" style="margin-top:12px" onclick="closeMod('drill-modal')">Close</button>
+  </div>
+</div>
+
+<!-- EXPENSE MODAL -->
+<div class="mbackdrop" id="exp-modal">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="mhdr"><div class="mtitle" id="exp-modal-title">New Expense</div><button class="mclose" onclick="closeMod('exp-modal')">×</button></div>
+    <div class="qa-status" id="qa-status"></div>
+
+    <!-- Transaction type pills -->
+    <div id="e-type-row" style="display:flex;gap:6px;margin-bottom:14px">
+      <button class="btn btn-d btn-sm active-type" id="type-expense" onclick="setTxnType('expense')" style="flex:1;border-width:2px">Expense</button>
+      <button class="btn btn-inc btn-sm" id="type-income" onclick="setTxnType('income')" style="flex:1">Income</button>
+      <button class="btn btn-exp btn-sm" id="type-transfer" onclick="setTxnType('transfer')" style="flex:1">Transfer</button>
+    </div>
+    <div class="ig">
+      <div style="display:flex;justify-content:space-between;align-items:center"><label class="ilabel" id="e-amt-label">Amount (₦)</label>
+        <select class="sfield e-cur" id="e-cur" onchange="updateExpAmtLabel()" title="Currency the price was in"><option value="NGN">₦ NGN</option><option value="USD">$ USD</option><option value="GBP">£ GBP</option></select></div>
+      <input class="ifield" type="text" id="e-amt" placeholder="0" style="font-size:1.2rem" oninput="updateExpFxHint()">
+      <div class="e-fx-hint" id="e-fx-hint"></div>
+    </div>
+    <!-- Expense fields -->
+    <div id="e-expense-fields">
+      <div class="gform">
+        <div class="ig"><label class="ilabel">Category</label><select class="sfield" id="e-cat" onchange="updateExpenseLines()"></select></div>
+        <div class="ig"><label class="ilabel">Bank</label>
+          <select class="sfield" id="e-bank" onchange="updateExpAmtLabel()"></select>
+        </div>
+      </div>
+      <div class="ig">
+        <label class="ilabel">Spent on</label>
+        <select class="sfield" id="e-payee-sel" onchange="handlePayeeSel()"></select>
+      </div>
+      <div class="ig" id="e-payee-new-wrap" style="display:none">
+        <label class="ilabel">New item</label>
+        <div style="display:flex;gap:6px;align-items:center">
+          <button class="emoji-trigger" id="e-payee-emoji" onclick="openIconPicker(this,{images:true,allowNone:true,query:document.getElementById('e-payee-new').value},v=>setIconBtn(this,v))" title="Pick an icon or logo" aria-label="Pick an icon or logo">📦</button>
+          <input class="ifield" type="text" id="e-payee-new" placeholder="Lunch, Spar, Netflix, Mum…" style="flex:1">
+        </div>
+      </div>
+    </div>
+    <!-- Income fields -->
+    <div id="e-income-fields" style="display:none">
+      <div class="gform">
+        <div class="ig"><label class="ilabel">Category</label>
+          <select class="sfield" id="i-cat2"></select>
+        </div>
+        <div class="ig"><label class="ilabel">Bank Received Into</label><select class="sfield" id="i-bank2" onchange="updateExpAmtLabel()"></select></div>
+      </div>
+    </div>
+    <!-- Transfer fields -->
+    <div id="e-transfer-fields" style="display:none">
+      <!-- Transfer type selector -->
+      <div style="display:flex;gap:6px;margin-bottom:10px">
+        <button class="btn btn-g btn-sm xfr-type-btn active" id="xfr-type-cc" onclick="setXfrType('cash-cash')" style="flex:1">Cash → Cash</button>
+        <button class="btn btn-g btn-sm xfr-type-btn" id="xfr-type-ci" onclick="setXfrType('cash-inv')" style="flex:1">Cash → Invest</button>
+        <button class="btn btn-g btn-sm xfr-type-btn" id="xfr-type-ic" onclick="setXfrType('inv-cash')" style="flex:1">Invest → Cash</button>
+      </div>
+      <div class="gform">
+        <div class="ig"><label class="ilabel" id="xfr-from-label">From Account</label><select class="sfield" id="xfr2-from"></select></div>
+        <div class="ig"><label class="ilabel" id="xfr-to-label">To Account</label><select class="sfield" id="xfr2-to"></select></div>
+      </div>
+    </div>
+    <div class="gform">
+      <div class="ig"><label class="ilabel">Date</label><input class="ifield" type="date" id="e-date" onchange="updateExpFxHint()"></div>
+      <div class="ig"><label class="ilabel">Notes</label><textarea class="ifield ta-notes" id="e-notes" rows="1" placeholder="Optional" oninput="_autoGrowTA(this)"></textarea></div>
+    </div>
+    <!-- Repeats (hidden while editing) -->
+    <div id="e-recur-row" style="display:flex;flex-direction:column;gap:8px;padding:10px 12px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--rsm);margin-bottom:12px">
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <div><div style="font-size:0.76rem;font-weight:600">Repeats</div><div style="font-size:0.6875rem;color:var(--text2)" id="recur-desc">One-time</div></div>
+        <select class="sfield" id="e-recur" aria-label="Repeats" onchange="updateRecurDesc()" style="font-size:0.7rem;padding:4px 8px;width:auto">
+          <option value="">No</option>
+          <option value="weekly">Weekly</option>
+          <option value="monthly">Monthly</option>
+          <option value="quarterly">Quarterly</option>
+          <option value="annually">Yearly</option>
+        </select>
+      </div>
+      <label id="e-recur-auto-row" style="display:none;align-items:center;gap:6px;font-size:0.68rem;color:var(--text2);cursor:pointer"><input type="checkbox" id="e-recur-auto"> Post it automatically each time (otherwise it waits on Home for a tap)</label>
+    </div>
+    <input type="hidden" id="e-type" value="expense">
+    <input type="hidden" id="e-edit-id" value="">
+    <button class="btn btn-p btn-full" id="e-save" onclick="saveExpense()">Save Expense</button>
+  </div>
+</div>
+
+<!-- POST A REPEATING ITEM: choose the account (v4.9.6) -->
+<div class="mbackdrop" id="recur-post-modal">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="mhdr">
+      <div class="mtitle" id="recur-post-title">Post</div>
+      <button class="mclose" onclick="closeMod('recur-post-modal')" aria-label="Close">×</button>
+    </div>
+    <div class="csub" id="recur-post-sub" style="margin-bottom:12px"></div>
+    <div class="ig">
+      <label class="ilabel" for="recur-post-bank" id="recur-post-bank-lbl">Pay from</label>
+      <select class="sfield" id="recur-post-bank"></select>
+    </div>
+    <label style="display:flex;align-items:center;gap:8px;font-size:0.72rem;color:var(--text2);margin:4px 0 14px;cursor:pointer">
+      <input type="checkbox" id="recur-post-remember"> <span id="recur-post-remember-lbl">Use this account next time</span>
+    </label>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-g" style="flex:1" onclick="closeMod('recur-post-modal')">Cancel</button>
+      <button class="btn btn-p" style="flex:2" id="recur-post-go" onclick="_confirmRecurPost()">Post</button>
+    </div>
+  </div>
+</div>
+
+<!-- RECURRING MODAL -->
+<div class="mbackdrop" id="xfr-hist-modal">
+  <div class="modal">
+    <div class="mhdr">
+      <div class="mtitle" id="xfr-hist-title">Transfer History</div>
+      <button class="mclose" onclick="closeMod('xfr-hist-modal')">×</button>
+    </div>
+    <div id="xfr-hist-body"></div>
+  </div>
+</div>
+
+<div class="mbackdrop" id="global-search-modal">
+  <div class="modal">
+    <div class="mhdr">
+      <div class="mtitle">Search all months</div>
+      <button class="mclose" onclick="closeMod('global-search-modal')">×</button>
+    </div>
+    <div class="search-bar" style="margin-bottom:10px">
+      <span class="search-icon">🔍</span>
+      <input type="text" id="global-search-input" placeholder="Item, category or notes…" oninput="_debounceGlobalSearch()">
+    </div>
+    <div id="global-search-body"><div class="csub">Type to search every transaction across every month.</div></div>
+  </div>
+</div>
+
+
+<div class="mbackdrop" id="recur-modal">
+  <div class="modal" onclick="event.stopPropagation()" style="max-height:85vh">
+    <div class="mhdr"><div class="mtitle">Recurring Transactions</div><button class="mclose" onclick="closeMod('recur-modal')">×</button></div>
+    <div id="recur-list"></div>
+    <div style="margin-top:8px;font-size:0.7rem;color:var(--text2);line-height:1.5">Items marked "Post automatically" are recorded by themselves when the app opens on or after their date. The rest show on Home when due; tap to post, or skip one. To add one, choose "Repeats" when you add an expense or income.</div>
+  </div>
+</div>
+
+<!-- GOAL MODAL -->
+<div class="mbackdrop" id="goal-modal">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="mhdr"><div class="mtitle" id="goal-modal-title">New Goal</div><button class="mclose" onclick="closeMod('goal-modal')">×</button></div>
+    <div class="ig"><label class="ilabel">Goal Name</label>
+      <div style="display:flex;gap:6px;align-items:center">
+        <button class="emoji-trigger" id="goal-emoji" onclick="openEmojiPicker(this,e=>document.getElementById('goal-emoji').textContent=e)" title="Pick emoji">🎯</button>
+        <input class="ifield" type="text" id="goal-name" placeholder="e.g. Emergency Fund" style="flex:1">
+      </div>
+    </div>
+    <div class="gform">
+      <div class="ig"><label class="ilabel">Target (₦)</label><input class="ifield" type="text" id="goal-target" placeholder="0"></div>
+      <div class="ig"><label class="ilabel">Saved So Far (₦)</label><input class="ifield" type="text" id="goal-current" placeholder="0"></div>
+    </div>
+    <div class="ig"><label class="ilabel">Target Date (optional)</label><input class="ifield" type="date" id="goal-deadline"></div>
+    <button class="btn btn-p btn-full" onclick="saveGoalFromModal()">Save Goal</button>
+    <button class="btn btn-d btn-full" id="goal-delete-btn" style="margin-top:8px;display:none" onclick="deleteGoalFromModal()">Delete Goal</button>
+  </div>
+</div>
+
+
+<!-- MERGE CATEGORY MODAL -->
+<!-- ── Liquidate Investment Modal ── -->
+<div class="mbackdrop" id="liq-modal">
+  <div class="modal" style="max-height:92vh;overflow-y:auto">
+    <div class="mhdr"><div class="mtitle" id="liq-title">Liquidate Investment</div><button class="mclose" onclick="closeMod('liq-modal')">×</button></div>
+    <div style="padding:0 16px 16px">
+      <div style="font-size:0.7rem;color:var(--text3);margin-bottom:14px" id="liq-sub-desc"></div>
+      <div class="ig" style="margin-bottom:10px">
+        <label class="ilabel">Amount to liquidate (₦)</label>
+        <input class="ifield" type="text" id="liq-amount" placeholder="0">
+        <div style="font-size:0.6875rem;color:var(--text3);margin-top:3px" id="liq-amount-hint"></div>
+      </div>
+      <div class="ig" style="margin-bottom:8px">
+        <label class="ilabel">Deposit to</label>
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <button id="liq-dest-cash-btn" class="btn btn-sm btn-p" style="flex:1;font-size:0.72rem" onclick="setLiqDest('cash')">Cash account</button>
+          <button id="liq-dest-inv-btn" class="btn btn-sm btn-g" style="flex:1;font-size:0.72rem" onclick="setLiqDest('investment')">Investment</button>
+        </div>
+        <select class="sfield" id="liq-bank"></select>
+      </div>
+      <div class="ig" style="margin-bottom:14px">
+        <label class="ilabel">Date</label>
+        <input class="ifield" type="date" id="liq-date">
+      </div>
+      <button class="btn btn-p btn-full" style="font-weight:700" onclick="confirmLiquidation()">Confirm Liquidation</button>
+      <button class="btn btn-g btn-full" style="margin-top:8px" onclick="closeMod('liq-modal')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div class="mbackdrop" id="acct-modal">
+  <div class="modal" onclick="event.stopPropagation()" style="max-height:92vh;overflow-y:auto">
+    <div class="mhdr"><div class="mtitle" id="acct-title">Edit account</div><button class="mclose" onclick="closeMod('acct-modal')">×</button></div>
+    <div style="padding:0 16px 16px" id="acct-body"></div>
+  </div>
+</div>
+
+<!-- Say it: speak or type a transaction; it is read and the + form opens filled in for review -->
+<div class="mbackdrop" id="voice-modal" onclick="closeVoice()">
+  <div class="modal" onclick="event.stopPropagation()" style="padding-bottom:22px">
+    <div class="mhdr"><div class="mtitle">Say it</div><button class="mclose" onclick="closeVoice()">×</button></div>
+    <div class="vc-body">
+      <button class="vc-mic" id="vc-mic" onclick="voiceAddStart()" aria-label="Start or stop listening">🎤</button>
+      <div class="vc-status" id="vc-status"></div>
+      <div class="qa-box vc-box">
+        <input type="search" class="qa-input" id="vc-text" placeholder="Or type it: “5k lunch from GTB”" enterkeyhint="go" autocomplete="off" onfocus="voiceAddTyping()" onkeydown="if(event.key==='Enter'){event.preventDefault();voiceAddSubmit();}">
+        <button class="qa-btn qa-go" onclick="voiceAddSubmit()" title="Fill in the form" aria-label="Fill in the form">✦</button>
+      </div>
+      <div class="vc-hint">Try “5k lunch from GTB yesterday”, “received 250k salary into Access” or “moved 20k from Opay to Kuda”.</div>
+    </div>
+  </div>
+</div>
+
+<div class="mbackdrop" id="int-modal">
+  <div class="modal" onclick="event.stopPropagation()" style="padding-bottom:20px">
+    <div class="mhdr"><div class="mtitle" id="int-title">Record interest</div><button class="mclose" onclick="closeMod('int-modal')">×</button></div>
+    <div style="padding:0 16px 16px">
+      <div style="font-size:0.72rem;color:var(--text2);margin-bottom:12px;line-height:1.5" id="int-desc"></div>
+      <div class="ig" style="margin-bottom:14px">
+        <label class="ilabel" id="int-amt-lbl">Interest earned</label>
+        <input class="ifield" type="text" id="int-amount" placeholder="0" inputmode="decimal">
+      </div>
+      <button class="btn btn-p btn-full" style="font-weight:700" onclick="confirmRecordInterest()">Record interest</button>
+      <button class="btn btn-g btn-full" style="margin-top:8px" onclick="closeMod('int-modal')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div class="mbackdrop" id="merge-cat-modal">
+  <div class="modal" onclick="event.stopPropagation()" style="padding-bottom:24px">
+    <div class="mhdr"><div class="mtitle">Merge Category</div><button class="mclose" onclick="closeMod('merge-cat-modal')">×</button></div>
+    <div id="merge-cat-body" style="font-size:0.82rem;line-height:1.6;color:var(--text2)"></div>
+    <div style="display:flex;gap:8px;margin-top:18px">
+      <button class="btn btn-g" style="flex:1" onclick="closeMod('merge-cat-modal')">Cancel</button>
+      <button class="btn btn-d" style="flex:1" id="merge-cat-confirm" onclick="execMergeCat()">Merge</button>
+    </div>
+  </div>
+</div>
+<!-- ── All Transactions Modal ── -->
+<div class="mbackdrop" id="all-txns-modal" onclick="closeMod('all-txns-modal')">
+  <div class="modal" onclick="event.stopPropagation()" style="max-height:88vh">
+    <div class="mhdr"><div class="mtitle" id="all-txns-title">All Transactions</div><button class="mclose" onclick="closeMod('all-txns-modal')">×</button></div>
+    <div id="all-txns-body" style="overflow-y:auto;max-height:calc(88vh - 90px);padding-bottom:8px"></div>
+  </div>
+</div>
+<!-- ── Investment Adjustment Modal ── -->
+<div class="mbackdrop" id="inv-adj-modal">
+  <div class="modal">
+    <div class="mhdr"><div class="mtitle" id="inv-adj-title">Record Inflow</div><button class="mclose" onclick="closeMod('inv-adj-modal')">×</button></div>
+    <div style="padding:0 16px 16px">
+      <div style="font-size:0.68rem;color:var(--text3);margin-bottom:12px" id="inv-adj-desc"></div>
+      <div class="ig" style="margin-bottom:10px">
+        <label class="ilabel" id="inv-adj-amt-label">Amount (₦)</label>
+        <input class="ifield" type="text" id="inv-adj-amount" placeholder="0">
+      </div>
+      <div class="ig" id="inv-adj-src-wrap" style="margin-bottom:10px;display:none">
+        <label class="ilabel">Funded From Account (optional)</label>
+        <select class="sfield" id="inv-adj-src"><option value="">— None / Don't deduct —</option></select>
+        <div class="csub" style="margin-top:4px;font-size:0.6875rem">Pick an account to move the money out of it. Leave as None to just record the inflow.</div>
+      </div>
+      <div class="ig" style="margin-bottom:10px">
+        <label class="ilabel">Date</label>
+        <input class="ifield" type="date" id="inv-adj-date">
+      </div>
+      <div class="ig" style="margin-bottom:14px">
+        <label class="ilabel">Notes (optional)</label>
+        <textarea class="ifield ta-notes" id="inv-adj-notes" rows="1" placeholder="e.g. Monthly top-up" oninput="_autoGrowTA(this)"></textarea>
+      </div>
+      <button class="btn btn-p btn-full" style="font-weight:700" onclick="applyInvAdjust()">Apply</button>
+      <button class="btn btn-g btn-full" style="margin-top:8px" onclick="closeMod('inv-adj-modal')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+
+<!-- DEBTOR MODAL -->
+<div class="mbackdrop" id="deb-modal">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="mhdr"><div class="mtitle" id="deb-mod-title">Add Debtor</div><button class="mclose" onclick="closeMod('deb-modal')">×</button></div>
+    <div class="ig"><label class="ilabel">Name</label><input class="ifield" type="text" id="d-name" placeholder="Who owes you"></div>
+    <div class="gform">
+      <div class="ig"><label class="ilabel">Currency</label><select class="sfield" id="d-cur"><option>NGN</option><option>USD</option><option>GBP</option></select></div>
+      <div class="ig"><label class="ilabel">Type</label><select class="sfield" id="d-type"><option>Loan</option><option>Gift</option><option>Other</option></select></div>
+    </div>
+    <div class="gform">
+      <div class="ig"><label class="ilabel">Amount</label><input class="ifield" type="text" id="d-amt" placeholder="0"></div>
+      <div class="ig"><label class="ilabel">Paid So Far</label><input class="ifield" type="text" id="d-paid" placeholder="0"></div>
+    </div>
+    <div class="ig"><label class="ilabel">Disbursed From Account</label><select class="sfield" id="d-acct"><option value="">— None / Don't deduct —</option></select></div>
+    <div class="ig" id="d-adjust-wrap" style="display:none">
+      <label style="display:flex;align-items:center;gap:6px;font-size:0.68rem;color:var(--text2);cursor:pointer">
+        <input type="checkbox" id="d-adjust-cash">
+        Also adjust cash for the change in amount (uses the account above)
+      </label>
+    </div>
+    <div class="ig"><label class="ilabel">Date of Transaction</label><input class="ifield" type="date" id="d-date"></div>
+    <div class="ig"><label class="ilabel">Exchange Rate to ₦ (blank = default)</label><input class="ifield" type="text" id="d-rate" placeholder="e.g. 1600"></div>
+    <div class="ig"><label class="ilabel">Notes</label><textarea class="ifield ta-notes" id="d-notes" rows="1" placeholder="Optional" oninput="_autoGrowTA(this)"></textarea></div>
+    <button class="btn btn-p btn-full" id="deb-save" onclick="saveDebtor()">Add Debtor</button>
+    <input type="hidden" id="d-eid">
+  </div>
+</div>
+
+<div class="mbackdrop" id="loan-modal">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="mhdr"><div class="mtitle" id="loan-mod-title">Add Loan</div><button class="mclose" onclick="closeMod('loan-modal')">×</button></div>
+    <div class="ig"><label class="ilabel">Lender</label><input class="ifield" type="text" id="ln-lender" placeholder="e.g. GTBank, Renmoney"></div>
+    <div class="gform">
+      <div class="ig"><label class="ilabel">Currency</label><select class="sfield" id="ln-cur"><option>NGN</option><option>USD</option><option>GBP</option></select></div>
+      <div class="ig"><label class="ilabel">Loan Type</label><select class="sfield" id="ln-type"><option>Personal</option><option>Business</option><option>Mortgage</option><option>Auto</option><option>Student</option><option>Other</option></select></div>
+    </div>
+    <div class="gform">
+      <div class="ig"><label class="ilabel">Principal Amount</label><input class="ifield" type="text" id="ln-amt" placeholder="0"></div>
+      <div class="ig"><label class="ilabel">Interest Rate (% p.a.)</label><input class="ifield" type="text" id="ln-rate-pa" placeholder="e.g. 24"></div>
+    </div>
+    <div class="ig"><label class="ilabel">Proceeds To Account</label><select class="sfield" id="ln-acct"><option value="">— None / External —</option></select></div>
+    <div class="ig" id="ln-adjust-wrap" style="display:none">
+      <label style="display:flex;align-items:center;gap:6px;font-size:0.68rem;color:var(--text2);cursor:pointer">
+        <input type="checkbox" id="ln-adjust-cash">
+        Also adjust cash for the change in principal (uses the account above)
+      </label>
+    </div>
+    <div class="gform">
+      <div class="ig"><label class="ilabel">Start Date</label><input class="ifield" type="date" id="ln-start"></div>
+      <div class="ig"><label class="ilabel">Due Date</label><input class="ifield" type="date" id="ln-due" placeholder="Optional"></div>
+    </div>
+    <div class="ig"><label class="ilabel">Exchange Rate to ₦ (blank = default)</label><input class="ifield" type="text" id="ln-fx" placeholder="e.g. 1600"></div>
+    <div class="ig"><label class="ilabel">Notes</label><textarea class="ifield ta-notes" id="ln-notes" rows="1" placeholder="Optional — purpose, collateral, etc." oninput="_autoGrowTA(this)"></textarea></div>
+    <button class="btn btn-p btn-full" id="loan-save" onclick="saveLoan()">Add Loan</button>
+    <input type="hidden" id="ln-eid">
+  </div>
+</div>
+
+<div class="mbackdrop" id="loan-repay-modal">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="mhdr"><div class="mtitle">Record Repayment</div><button class="mclose" onclick="closeMod('loan-repay-modal')">×</button></div>
+    <div class="ig"><label class="ilabel">Repayment Amount</label><input class="ifield" type="text" id="lrp-amt" placeholder="0"></div>
+    <div class="ig"><label class="ilabel">Deduct From Account</label><select class="sfield" id="lrp-acct"><option value="">— None / External —</option></select></div>
+    <div class="ig"><label class="ilabel">Date</label><input class="ifield" type="date" id="lrp-date"></div>
+    <div class="ig"><label class="ilabel">Notes</label><textarea class="ifield ta-notes" id="lrp-notes" rows="1" placeholder="Optional" oninput="_autoGrowTA(this)"></textarea></div>
+    <button class="btn btn-p btn-full" onclick="saveLoanRepayment()">Record Repayment</button>
+    <input type="hidden" id="lrp-lid">
+  </div>
+</div>
+
+<script defer src="vault.js?v=4.9.6"></script>
+<script defer src="account.js?v=4.9.6"></script>
+<script defer src="setup.js?v=4.9.6"></script>
+<script defer src="app.js?v=4.9.6"></script>
+</body>
+</html>

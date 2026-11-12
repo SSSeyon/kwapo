@@ -1,0 +1,13 @@
+# GitHub Pages build settings (v4.9).
+# The site is plain static files; Jekyll only copies them. Its one job here is
+# to keep development files in the repo but off https://apowo.app.
+# Anything new that shouldn't be public on the site goes in this list.
+exclude:
+  - firestore.rules
+  - bump-version.ps1
+  - serve-spendwise.ps1
+  - make-icons.ps1
+  - worker
+  - tests
+  - README.md
+  - HANDOVER.md

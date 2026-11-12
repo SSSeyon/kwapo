@@ -1,0 +1,188 @@
+// apowo Service Worker
+// Stale-while-revalidate for the HTML shell (instant boot, refreshed in the
+// background); cache-first for version-queried assets, fonts and CDN libs.
+const CACHE = 'spendwise-v26';
+
+// Only truly-static, rarely-changing assets are pre-cached. index.html,
+// app.js and styles.css are intentionally NOT pre-cached here: index.html is
+// network-first below, and app.js/styles.css are loaded with a ?v= query so
+// their URL changes every release (cache-busting) — pre-caching them via
+// cache.add() risks capturing a stale copy from the HTTP cache at install.
+const STATIC = [
+  './',
+  './manifest.json',
+  './favicon.svg',
+  './icon-192.png',
+  'https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&display=swap',
+  'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap',
+  // Pinned (v4.7): an unversioned URL would pick up a new major version the
+  // next time the offline copy is rebuilt, which could break every chart.
+  'https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js',
+  'https://cdn.jsdelivr.net/npm/chartjs-chart-sankey@0.12.0/dist/chartjs-chart-sankey.min.js',
+  // Loaded on first use (Excel export), pre-cached so it also works offline.
+  'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js',
+  'https://www.gstatic.com/firebasejs/12.19.0/firebase-app-compat.js',
+  'https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore-compat.js',
+  'https://www.gstatic.com/firebasejs/12.19.0/firebase-auth-compat.js',
+  'https://www.gstatic.com/firebasejs/12.19.0/firebase-app-check-compat.js',
+];
+
+// Origins that must always go to the network — never cache
+const NETWORK_ONLY = [
+  'firestore.googleapis.com',
+  'firebase.googleapis.com',
+  'identitytoolkit.googleapis.com',
+  'securetoken.googleapis.com',
+  'firebaseinstallations.googleapis.com',
+  'generativelanguage.googleapis.com',
+  'api.apowo.app',              // AI service and crash reports
+  'open.er-api.com',            // daily exchange rates: never serve a cached copy
+];
+// NOTE: fonts.gstatic.com is deliberately NOT network-only. Google serves font
+// binaries from immutable, hash-named URLs, so they are safe to cache forever —
+// and leaving them uncached cost a blocking network round-trip on every launch
+// (text paint waits on webfonts), which was a major share of online boot time.
+
+// ── Skip waiting when told to (used by Force Hard Refresh and update banner)
+self.addEventListener('message', event => {
+  if (event.data?.type === 'SKIP_WAITING') self.skipWaiting();
+});
+
+// ── Notification click: bring the app to the foreground ────────────────────
+// The alerts are shown with ServiceWorkerRegistration.showNotification(), so on
+// Android the notification belongs to THIS service worker — and a tap does
+// nothing unless the SW handles `notificationclick`. Without this listener the
+// notification just dismisses and the app never opens (the reported bug).
+// Behaviour: focus an already-open app window if one exists (navigating it to
+// the target if needed), otherwise open a fresh window.
+self.addEventListener('notificationclick', event => {
+  event.notification.close();
+  const scope = self.registration.scope;                     // e.g. …/spendwise/
+  const target = (event.notification.data && event.notification.data.url) || scope;
+  event.waitUntil((async () => {
+    const wins = await clients.matchAll({ type: 'window', includeUncontrolled: true });
+    // Prefer a window already within our scope: focus and (if needed) navigate it.
+    for (const c of wins) {
+      if (c.url && c.url.startsWith(scope)) {
+        try { await c.focus(); } catch (e) {}
+        if ('navigate' in c && c.url !== target) { try { await c.navigate(target); } catch (e) {} }
+        return;
+      }
+    }
+    // Fall back to any client, then to opening a new window.
+    if (wins.length && 'focus' in wins[0]) { try { await wins[0].focus(); return; } catch (e) {} }
+    if (clients.openWindow) { try { await clients.openWindow(target); } catch (e) {} }
+  })());
+});
+
+// ── Install: pre-cache static assets ──────────────────────────────────────
+self.addEventListener('install', event => {
+  event.waitUntil(
+    caches.open(CACHE).then(cache => Promise.allSettled(STATIC.map(url => cache.add(url))))
+    // Do NOT call skipWaiting() here — wait for explicit message or forceHardRefresh
+  );
+});
+
+// ── Activate: clean up old caches ─────────────────────────────────────────
+self.addEventListener('activate', event => {
+  event.waitUntil(
+    caches.keys().then(keys =>
+      Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))
+    ).then(() => self.clients.claim())
+  );
+});
+
+// ── Fetch ─────────────────────────────────────────────────────────────────
+self.addEventListener('fetch', event => {
+  const req = event.request;
+  const url = new URL(req.url);
+
+  // Always go to network for Firebase and other dynamic origins
+  if (NETWORK_ONLY.some(origin => url.hostname.includes(origin))) {
+    event.respondWith(fetch(req));
+    return;
+  }
+
+  // Only handle GET requests
+  if (req.method !== 'GET') {
+    event.respondWith(fetch(req));
+    return;
+  }
+
+  // HTML shell (page navigations and index.html): stale-while-revalidate.
+  //
+  // This used to be network-first, which meant every online launch blocked on a
+  // full round-trip to GitHub Pages before ANYTHING painted — while offline
+  // launches were instant, because the fetch failed immediately and fell
+  // straight through to the cache. That asymmetry was the whole reason the app
+  // felt slow to open on a connection.
+  //
+  // Now: return the cached shell immediately (if we have one) and refresh it in
+  // the background for next time. The shell can therefore be one release behind
+  // for a single launch — that is exactly what checkForUpdate() in app.js and
+  // the update banner exist to cover, and forceHardRefresh() skips the wait.
+  // The ?v= on app.js/styles.css inside the shell still keeps those in lockstep.
+  //
+  // Scoped to the app's actual entry point rather than `req.mode === 'navigate'`:
+  // matching every navigation would hand the cached shell back for ANY same-origin
+  // HTML path, which is wrong for anything that isn't index.html. The PWA launch
+  // URL is the directory root ('/spendwise/'), so the endsWith('/') test already
+  // covers it.
+  // Only the app's own entry point (v4.9: was any path ending in '/', which
+  // served the app shell for sub-folders like /tests/).
+  const scopePath = new URL(self.registration.scope).pathname;
+  const isHTML = url.pathname === scopePath || url.pathname === scopePath + 'index.html';
+  if (isHTML && url.origin === self.location.origin) {
+    event.respondWith((async () => {
+      const cache = await caches.open(CACHE);
+      const cached = (await cache.match('./index.html')) || (await cache.match('./'));
+
+      // {cache:'no-cache'} forces revalidation against the server (304 when
+      // unchanged) instead of silently serving a max-age-fresh stale copy.
+      const revalidate = fetch(new Request(url.href, { cache: 'no-cache' }))
+        .then(fresh => {
+          if (fresh && fresh.status === 200) cache.put('./index.html', fresh.clone());
+          return fresh;
+        });
+
+      if (cached) {
+        // Keep the SW alive for the background refresh, but never let a failed
+        // or hanging revalidation surface as an error — we already responded.
+        event.waitUntil(revalidate.catch(() => {}));
+        return cached;
+      }
+
+      // Cold cache (first ever load, or after a cache wipe): we have no choice
+      // but to wait for the network.
+      try {
+        return await revalidate;
+      } catch (err) {
+        return new Response('Offline — reconnect to load apowo.', {
+          status: 503, headers: { 'Content-Type': 'text/plain' },
+        });
+      }
+    })());
+    return;
+  }
+
+  // Everything else (version-queried app.js/styles.css, CDN libs, fonts,
+  // manifest): cache-first. Version-queried URLs are immutable per release,
+  // so a cached copy is always the correct one for that URL.
+  event.respondWith(
+    caches.open(CACHE).then(async cache => {
+      const cached = await cache.match(req);
+      if (cached) return cached;
+      try {
+        const networkResponse = await fetch(req);
+        if (networkResponse && networkResponse.status === 200 && networkResponse.type !== 'opaque') {
+          cache.put(req, networkResponse.clone());
+        }
+        return networkResponse;
+      } catch (err) {
+        return new Response('Offline — open apowo while connected to cache it.', {
+          status: 503, headers: { 'Content-Type': 'text/plain' },
+        });
+      }
+    })
+  );
+});

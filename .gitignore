@@ -1,0 +1,4 @@
+# Local-only notes and tool state. HANDOVER.md has account details and design
+# decisions: it stays on this machine (and Google Drive), not in the public repo.
+HANDOVER.md
+.claude/
