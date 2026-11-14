@@ -41,6 +41,10 @@ const MAX_REPORT_BODY = 8 * 1024;
 const MODEL_RE = /^gemini-[a-z0-9.\-]{1,40}$/;
 // Keep in step with AI_MODELS in app.js (best first).
 const MODELS = ['gemini-flash-latest', 'gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash'];
+// Model → time until which it's tried last because it just timed out. Kept in
+// memory, so per Cloudflare location and only while the worker stays warm.
+const slowUntil = new Map();
+const SLOW_FOR = 10 * 60 * 1000;
 
 export default {
   async fetch(request, env, ctx) {
@@ -122,7 +126,11 @@ async function gemini(request, env, ctx, cors, model) {
   // user's whole history takes longer).
   const attemptMs = Math.min(60000, Math.max(3000, Number(request.headers.get('x-apowo-attempt-ms')) || 20000));
   const start = MODELS.indexOf(model);
-  const chain = start < 0 ? [model] : MODELS.slice(start);
+  // Models that recently timed out go to the back of the line for a while,
+  // so one hung model doesn't make every request wait out its time limit.
+  const now = Date.now();
+  const all = start < 0 ? [model] : MODELS.slice(start);
+  const chain = [...all.filter(m => !(slowUntil.get(m) > now)), ...all.filter(m => slowUntil.get(m) > now)];
   let res = null, keyTrouble = false, timedOut = false;
   for (const m of chain) {
     for (const key of keys) {
@@ -135,7 +143,7 @@ async function gemini(request, env, ctx, cors, model) {
           signal: ac.signal,
         });
       } catch (e) {                         // too slow, or Google unreachable: next model
-        if (ac.signal.aborted) { timedOut = true; console.warn('model timed out', m, attemptMs); }
+        if (ac.signal.aborted) { timedOut = true; slowUntil.set(m, Date.now() + SLOW_FOR); console.warn('model timed out', m, attemptMs); }
         res = null; break;
       } finally { clearTimeout(timer); }
       if (res.ok) return answer(res, m, cors);
