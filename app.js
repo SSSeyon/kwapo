@@ -4994,7 +4994,7 @@ Note: ${JSON.stringify(String(text).slice(0,300))}`;
   // 12 s in all: the form is already filled in from the phone's own reading.
   // The timeout aborts the request itself; the old race left the model chain
   // running (and counting) in the background after giving up.
-  const res=await _aiFetch({contents:[{role:'user',parts:[{text:prompt}]}],generationConfig:{temperature:0,responseMimeType:'application/json',maxOutputTokens:400,thinkingConfig:{thinkingBudget:0}}},{timeout:12000,deadline:12000});
+  const res=await _aiFetch({contents:[{role:'user',parts:[{text:prompt}]}],generationConfig:{temperature:0,responseMimeType:'application/json',maxOutputTokens:400,thinkingConfig:{thinkingBudget:0}}},{timeout:12000,deadline:12000,attempt:4000});
   let j;try{j=JSON.parse(String(res.text).replace(/^```(?:json)?|```$/g,'').trim());}catch{return null;}
   if(!j||typeof j!=='object')return null;
   const accts=getCashAccounts(),pickAcct=v=>accts.find(a=>_qaNorm(a)===_qaNorm(v))||null;
@@ -9696,7 +9696,7 @@ function renderSettData(){
         <button class="btn btn-g btn-sm" style="flex:1" onclick="openGuide()">Open the guide</button>
         <button class="btn btn-g btn-sm" style="flex:1" onclick="reportProblem()">Report a problem</button>
       </div>
-      <div style="font-size:0.6875rem;color:var(--text3);line-height:1.7;margin-top:10px"><div>Version: v4.9.9</div><div style="color:var(--text3);margin-top:4px">v4.9.9: AI uses less of the shared allowance: Say it and Quick add skip the AI when your phone already understood the entry, and slow AI requests now stop instead of hanging.</div></div>
+      <div style="font-size:0.6875rem;color:var(--text3);line-height:1.7;margin-top:10px"><div>Version: v4.9.10</div><div style="color:var(--text3);margin-top:4px">v4.9.10: AI answers faster when some AI models are slow: the AI service now skips a model that doesn't answer in time and uses the next one.</div></div>
     </div>
     <details class="sett-adv" id="sett-adv"${_settAdvOpen?' open':''} ontoggle="_settAdvOpen=this.open">
       <summary>Advanced<span>AI keys, net worth, exchange rates, balance audit</span></summary>
@@ -10627,7 +10627,7 @@ if('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').cat
 
 
 // ── Version check against GitHub Pages ──
-const APP_VERSION='v4.9.9';
+const APP_VERSION='v4.9.10';
 async function checkForUpdate(){
   try{
     const res=await fetch(location.origin+location.pathname+'?_='+Date.now(),{cache:'no-store'});
@@ -11510,7 +11510,7 @@ async function _aiRun(cid){
       system_instruction:{parts:[{text:ctx}]},
       contents,
       generationConfig:{temperature:0.35,maxOutputTokens:8192},
-    },{timeout:60000,deadline:180000}); // long answers may need continuing
+    },{timeout:150000,deadline:180000,attempt:30000}); // the service may skip past slow models; long answers may need continuing
     _aiPush(cid,{r:'m',t:reply.text,mdl:reply.model});
   }catch(e){
     _aiPush(cid,{r:'e',t:e&&e.message?e.message:'Request failed — check your connection'});
@@ -11543,7 +11543,8 @@ async function aiRetry(){
 // model kept winning and the new one was never reached. Best-first, every time.
 // opts.timeout: ms allowed per request (default 45 s; a hung model is abandoned
 // and the next one tried). opts.deadline: ms for the whole attempt across
-// models (default 90 s). Both abort the fetch itself, so nothing keeps running
+// models (default 90 s). opts.attempt: ms the AI service gives each model
+// before moving on to the next (sent as x-apowo-attempt-ms; default 20 s). Both abort the fetch itself, so nothing keeps running
 // (and spending the allowance) after the caller has given up (v4.9.9).
 async function _aiFetch(body,opts){
   opts=opts||{};
@@ -11560,7 +11561,7 @@ async function _aiFetch(body,opts){
   let lastErr='no models reachable',allRateLimited=true;
   for(const model of models){
     const target=()=>viaProxy
-      ?{url:`${AI_PROXY}/gemini/${encodeURIComponent(model)}`,headers:{'Content-Type':'application/json',...(idToken?{Authorization:'Bearer '+idToken}:{})}}
+      ?{url:`${AI_PROXY}/gemini/${encodeURIComponent(model)}`,headers:{'Content-Type':'application/json',...(idToken?{Authorization:'Bearer '+idToken}:{}),...(opts.attempt?{'x-apowo-attempt-ms':String(opts.attempt)}:{})}}
       :{url:`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,headers:{'Content-Type':'application/json','x-goog-api-key':own||_aiSharedKey()}};
     // One raw generateContent call. Returns {net}/{err} (err.rateLimited set
     // for 429s) for soft failures — the caller falls through to the next
