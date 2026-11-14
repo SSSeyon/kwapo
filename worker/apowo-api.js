@@ -49,7 +49,7 @@ export default {
     const cors = allowed ? {
       'Access-Control-Allow-Origin': origin,
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-apowo-attempt-ms',
       'Access-Control-Expose-Headers': 'x-apowo-refusal, x-apowo-model, x-apowo-cascade',
       'Access-Control-Max-Age': '86400',
       'Vary': 'Origin',
@@ -115,18 +115,29 @@ async function gemini(request, env, ctx, cors, model) {
   // try each key; a rate-limited (429) or rejected (401/403) key moves to the
   // next key, a missing model (404) or a server error (5xx) to the next model.
   // A bad request (400) is the request's fault: return it as it is.
+  // A model that doesn't answer within the time limit is abandoned and the
+  // next one tried (gemini-flash-latest has been seen to hang for minutes).
+  // The app may ask for a shorter or longer limit with x-apowo-attempt-ms
+  // (Quick add's tiny prompt answers in a second or two; a chat reply with the
+  // user's whole history takes longer).
+  const attemptMs = Math.min(60000, Math.max(3000, Number(request.headers.get('x-apowo-attempt-ms')) || 20000));
   const start = MODELS.indexOf(model);
   const chain = start < 0 ? [model] : MODELS.slice(start);
-  let res = null, keyTrouble = false;
+  let res = null, keyTrouble = false, timedOut = false;
   for (const m of chain) {
     for (const key of keys) {
+      const ac = new AbortController(), timer = setTimeout(() => ac.abort(), attemptMs);
       try {
         res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
           body,
+          signal: ac.signal,
         });
-      } catch (e) { res = null; break; }   // Google unreachable: try the next model
+      } catch (e) {                         // too slow, or Google unreachable: next model
+        if (ac.signal.aborted) { timedOut = true; console.warn('model timed out', m, attemptMs); }
+        res = null; break;
+      } finally { clearTimeout(timer); }
       if (res.ok) return answer(res, m, cors);
       if (res.status === 400) return answer(res, m, cors);
       if (res.status === 401 || res.status === 403) {
@@ -142,7 +153,9 @@ async function gemini(request, env, ctx, cors, model) {
   if (keyTrouble && (!res || res.status === 401 || res.status === 403)) {
     return json({ error: { message: 'The shared AI key needs attention.' } }, 502, { ...cors, 'x-apowo-cascade': '1' });
   }
-  if (!res) return json({ error: { message: 'The AI service could not reach Google.' } }, 502, { ...cors, 'x-apowo-cascade': '1' });
+  if (!res) return json({ error: { message: timedOut
+    ? 'The AI models are slow to answer right now. Try again in a minute.'
+    : 'The AI service could not reach Google.' } }, timedOut ? 504 : 502, { ...cors, 'x-apowo-cascade': '1' });
   return answer(res, chain[chain.length - 1], cors);
 }
 function answer(res, model, cors) {
