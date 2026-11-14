@@ -705,6 +705,10 @@ const FX_RATES = {
   '2025-10':{USD:1610,GBP:2050},'2025-11':{USD:1620,GBP:2060},'2025-12':{USD:1540,GBP:1950},
   '2026-01':{USD:1580,GBP:2010},'2026-02':{USD:1600,GBP:2030},'2026-03':{USD:1620,GBP:2060},
   '2026-04':{USD:1600,GBP:2040},'2026-05':{USD:1590,GBP:2020},
+  // Jun–Aug 2026 (added v4.9.8): the official monthly average scaled by how far
+  // this table ran above it in Mar–May 2026 (×1.17 for USD, ×1.11 for GBP), so
+  // the table stays on its own basis. From Sep 2026 the automatic rate applies.
+  '2026-06':{USD:1600,GBP:2020},'2026-07':{USD:1610,GBP:2040},'2026-08':{USD:1590,GBP:2040},
 };
 
 // Per-user fallbacks, set from appConfig/profile by _applyProfile() (the owner's
@@ -1256,8 +1260,47 @@ async function loadFxAuto(){
     if(d.exists&&d.data()?.rates)cSet(FX_AUTO_KEY,{...getFxAuto(),...d.data().rates});
   }catch(e){_warnLoad('loadFxAuto',e);}
 }
+// ── Filling in missed months (v4.9.8) ──
+// The automatic rate is only saved for months the app was opened in. A past
+// month after the built-in table that has no rate (and no rate of your own)
+// gets its average of five days (1st, 8th, 15th, 22nd, last) from a free,
+// keyless daily archive on jsDelivr, saved like an automatic rate (src:'hist')
+// so every device agrees. At most six months per run, at most once a day.
+const FX_HIST_URL=d=>`https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@${d}/v1/currencies/usd.min.json`;
+async function _fxBackfill(){
+  if(navigator.onLine===false)return;
+  try{if(Date.now()-(+localStorage.getItem('sw3_fx_hist_at')||0)<864e5)return;localStorage.setItem('sw3_fx_hist_at',String(Date.now()));}catch(e){}
+  const n=appNow(),cur=fxKey(n.getMonth()+1,n.getFullYear());
+  const lastTable=Object.keys(FX_RATES).sort().pop();
+  const auto=getFxAuto(),ovr=getFxOverrides();
+  const todo=[];
+  let [y,m]=lastTable.split('-').map(Number);
+  for(let i=0;i<120&&todo.length<6;i++){
+    m++;if(m>12){m=1;y++;}
+    const k=fxKey(m,y);if(k>=cur)break;
+    if(!ovr[k]&&!(auto[k]&&auto[k].USD))todo.push([y,m,k]);
+  }
+  if(!todo.length)return;
+  const found={};
+  for(const [yy,mm,k] of todo){
+    const last=new Date(yy,mm,0).getDate(),p=x=>String(x).padStart(2,'0');
+    const days=[1,8,15,22,last].map(d=>`${yy}-${p(mm)}-${p(d)}`);
+    const got=(await Promise.all(days.map(d=>fetch(FX_HIST_URL(d)).then(r=>r.ok?r.json():null).catch(()=>null))))
+      .map(j=>j&&j.usd).filter(u=>u&&+u.ngn>100&&+u.gbp>0);
+    if(!got.length)continue;
+    const usd=got.reduce((s,u)=>s+(+u.ngn),0)/got.length,gbp=got.reduce((s,u)=>s+u.ngn/u.gbp,0)/got.length;
+    found[k]={USD:Math.round(usd),GBP:Math.round(gbp),at:Date.now(),src:'hist'};
+  }
+  if(!Object.keys(found).length)return;
+  // Re-read: this month's automatic rate may have been saved meanwhile.
+  const fresh={...getFxAuto(),...found};
+  cSet(FX_AUTO_KEY,fresh);
+  if(db)db.collection('appConfig').doc('fxAuto').set({rates:fresh,updatedAt:FV.serverTimestamp()},{merge:true}).catch(e=>console.warn('fxAuto sync failed',e));
+  renderDashboard();
+}
 async function fxAutoUpdate(){
   if(navigator.onLine===false)return;
+  _fxBackfill().catch(e=>console.warn('exchange rate backfill failed',e));
   const n=appNow(),k=fxKey(n.getMonth()+1,n.getFullYear());
   const auto=getFxAuto();
   if(auto[k]&&Date.now()-(auto[k].at||0)<864e5)return;
@@ -9640,7 +9683,7 @@ function renderSettData(){
         <button class="btn btn-g btn-sm" style="flex:1" onclick="openGuide()">Open the guide</button>
         <button class="btn btn-g btn-sm" style="flex:1" onclick="reportProblem()">Report a problem</button>
       </div>
-      <div style="font-size:0.6875rem;color:var(--text3);line-height:1.7;margin-top:10px"><div>Version: v4.9.7</div><div style="color:var(--text3);margin-top:4px">v4.9.7: Show me walkthroughs: the Guide and the Getting started list can now walk you through adding accounts, recording spending, setting a budget and Say it, step by step on the real screens.</div></div>
+      <div style="font-size:0.6875rem;color:var(--text3);line-height:1.7;margin-top:10px"><div>Version: v4.9.8</div><div style="color:var(--text3);margin-top:4px">v4.9.8: Exchange rates: June to August 2026 are filled in, and a past month the app wasn't opened in now gets its rate automatically.</div></div>
     </div>
     <details class="sett-adv" id="sett-adv"${_settAdvOpen?' open':''} ontoggle="_settAdvOpen=this.open">
       <summary>Advanced<span>AI keys, net worth, exchange rates, balance audit</span></summary>
@@ -10571,7 +10614,7 @@ if('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').cat
 
 
 // ── Version check against GitHub Pages ──
-const APP_VERSION='v4.9.7';
+const APP_VERSION='v4.9.8';
 async function checkForUpdate(){
   try{
     const res=await fetch(location.origin+location.pathname+'?_='+Date.now(),{cache:'no-store'});
