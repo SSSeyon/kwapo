@@ -12,6 +12,7 @@ enabled = true          # keeps the crash reports in Workers Logs
 [vars]
 DAILY_SIGNED_IN = "150"
 DAILY_SIGNED_OUT = "30"
+# DAILY_TOTAL = "900"   # optional cap for everyone together (needs USAGE)
 
 # Requests per minute per person.
 [[ratelimits]]
@@ -19,9 +20,16 @@ name = "BURST"
 namespace_id = "1001"
 simple = { limit = 12, period = 60 }
 
-# Daily AI allowance per person. Create it first:
-#   npx wrangler kv namespace create LIMITS
-# and paste the id it prints here.
+# Daily AI allowance (v4.9.9). Create it first:
+#   npx wrangler d1 create apowo-usage
+# and paste the database_id it prints here. The worker makes its own table.
+[[d1_databases]]
+binding = "USAGE"
+database_name = "apowo-usage"
+database_id = "PASTE_D1_DATABASE_ID"
+
+# The older KV counter, used only when USAGE is missing. Safe to remove once
+# USAGE is bound.
 [[kv_namespaces]]
 binding = "LIMITS"
 id = "PASTE_KV_NAMESPACE_ID"

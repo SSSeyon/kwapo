@@ -2,7 +2,7 @@
 
 `apowo-api.js` runs on Cloudflare at `https://api.apowo.app`. It does two things:
 
-- **AI.** It holds the shared Gemini key as a secret and forwards the app's AI requests to Google, with a per-minute and per-day limit for each person. The key never reaches a device.
+- **AI.** It holds the shared Gemini key as a secret and forwards the app's AI requests to Google, with a per-minute and per-day limit for each person. When the preferred model is busy it tries the fallback models itself, so one question counts once. The key never reaches a device.
 - **Crash reports.** The app sends uncaught errors here (`boot.js`). They appear under **Workers → apowo-api → Logs**. Search for `apowo-crash`.
 
 This folder is excluded from the website (`_config.yml`), so it isn't served at apowo.app.
@@ -29,4 +29,15 @@ Check it works: open apowo, go to **Analytics → AI** and ask something, withou
 ## Free-tier limits
 
 - Workers: 100,000 requests a day.
-- KV: 1,000 writes a day. Each AI request is one write. Past that the daily limit stops counting until midnight UTC, and the per-minute limit still applies.
+- D1 (`USAGE`, the daily allowance): 100,000 rows written a day. Each AI request writes one row, two when `DAILY_TOTAL` is set. If D1 fails, the request goes through and the failure is logged.
+- KV (`LIMITS`, the older counter, only used without `USAGE`): 1,000 writes a day. Past that the daily limit stops counting until midnight UTC.
+- Gemini: the free quota belongs to the Google Cloud project, not the key. More keys from the same project add nothing. To raise it, turn on billing for the project (and set a budget). Set `DAILY_TOTAL` a little under the project's daily quota so people see a clear message instead of Google's errors.
+
+## Adding the D1 daily allowance (v4.9.9)
+
+1. **Storage & Databases → D1 → Create** a database called `apowo-usage`.
+2. In the worker: **Settings → Bindings → Add → D1 database**, variable name `USAGE`, pick `apowo-usage`.
+3. Optional: **Settings → Variables and Secrets → Add** a plain-text `DAILY_TOTAL`.
+4. Deploy the new `apowo-api.js`. The worker creates its `ai_usage` table on first use.
+
+Until `USAGE` is bound, the KV counter keeps working as before.

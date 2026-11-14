@@ -4991,10 +4991,10 @@ Rules:
 - currency is the currency the amount was stated in: "NGN", "USD" or "GBP" (e.g. "$7" or "7 dollars" is USD). Do not convert the amount.
 JSON shape: {"type":"","amount":0,"currency":"NGN","category":null,"payee":null,"bank":null,"toBank":null,"date":"","notes":""}
 Note: ${JSON.stringify(String(text).slice(0,300))}`;
-  const res=await Promise.race([
-    _aiFetch({contents:[{role:'user',parts:[{text:prompt}]}],generationConfig:{temperature:0,responseMimeType:'application/json',maxOutputTokens:400,thinkingConfig:{thinkingBudget:0}}}),
-    new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')),12000)),
-  ]);
+  // 12 s in all: the form is already filled in from the phone's own reading.
+  // The timeout aborts the request itself; the old race left the model chain
+  // running (and counting) in the background after giving up.
+  const res=await _aiFetch({contents:[{role:'user',parts:[{text:prompt}]}],generationConfig:{temperature:0,responseMimeType:'application/json',maxOutputTokens:400,thinkingConfig:{thinkingBudget:0}}},{timeout:12000,deadline:12000});
   let j;try{j=JSON.parse(String(res.text).replace(/^```(?:json)?|```$/g,'').trim());}catch{return null;}
   if(!j||typeof j!=='object')return null;
   const accts=getCashAccounts(),pickAcct=v=>accts.find(a=>_qaNorm(a)===_qaNorm(v))||null;
@@ -5050,6 +5050,16 @@ function _qaFill(r){
 }
 function _qaStatus(msg,cls){const el=document.getElementById('qa-status');if(el){el.textContent=msg||'';el.className='qa-status'+(cls?' '+cls:'');}}
 let _qaSeq=0; // a newer Say it takes over from one still waiting on the AI
+// True when the on-device reading is complete and trustworthy: an amount, the
+// account(s), and for an expense a category plus an item that already exists
+// in that category (a new name guessed from leftover words is not trusted).
+function _qaComplete(r){
+  if(!r||!(+r.amount>0))return false;
+  if(r.type==='transfer')return !!(r.bank&&r.toBank);
+  if(!r.bank||!r.category)return false;
+  if(r.type==='income')return true;
+  return !!r.payee&&getExpLines(r.category).includes(r.payee);
+}
 async function quickAddParse(text){
   text=String(text||'').trim();
   if(!text){_qaStatus('Type or say something like “5k lunch from GTB yesterday”.');return;}
@@ -5057,7 +5067,10 @@ async function quickAddParse(text){
   const local=_qaParseLocal(text);
   _qaFill(local);
   let r=local,byAI=false;
-  if(navigator.onLine!==false&&_aiKey()){
+  // Ask Gemini only when the phone's own reading left something out (v4.9.9).
+  // "5k lunch from GTB" resolves fully on the device, and each Gemini call
+  // counts against the shared AI allowance.
+  if(navigator.onLine!==false&&_aiKey()&&!_qaComplete(local)){
     _qaStatus('Filling in…');
     try{const a=await _qaParseAI(text,local);if(a&&seq===_qaSeq){r=a;byAI=true;_qaFill(a);}}
     catch(e){console.warn('quick add AI failed, kept the on-device result',e);}
@@ -9683,7 +9696,7 @@ function renderSettData(){
         <button class="btn btn-g btn-sm" style="flex:1" onclick="openGuide()">Open the guide</button>
         <button class="btn btn-g btn-sm" style="flex:1" onclick="reportProblem()">Report a problem</button>
       </div>
-      <div style="font-size:0.6875rem;color:var(--text3);line-height:1.7;margin-top:10px"><div>Version: v4.9.8</div><div style="color:var(--text3);margin-top:4px">v4.9.8: Exchange rates: June to August 2026 are filled in, and a past month the app wasn't opened in now gets its rate automatically.</div></div>
+      <div style="font-size:0.6875rem;color:var(--text3);line-height:1.7;margin-top:10px"><div>Version: v4.9.9</div><div style="color:var(--text3);margin-top:4px">v4.9.9: AI uses less of the shared allowance: Say it and Quick add skip the AI when your phone already understood the entry, and slow AI requests now stop instead of hanging.</div></div>
     </div>
     <details class="sett-adv" id="sett-adv"${_settAdvOpen?' open':''} ontoggle="_settAdvOpen=this.open">
       <summary>Advanced<span>AI keys, net worth, exchange rates, balance audit</span></summary>
@@ -10614,7 +10627,7 @@ if('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').cat
 
 
 // ── Version check against GitHub Pages ──
-const APP_VERSION='v4.9.8';
+const APP_VERSION='v4.9.9';
 async function checkForUpdate(){
   try{
     const res=await fetch(location.origin+location.pathname+'?_='+Date.now(),{cache:'no-store'});
@@ -11497,7 +11510,7 @@ async function _aiRun(cid){
       system_instruction:{parts:[{text:ctx}]},
       contents,
       generationConfig:{temperature:0.35,maxOutputTokens:8192},
-    });
+    },{timeout:60000,deadline:180000}); // long answers may need continuing
     _aiPush(cid,{r:'m',t:reply.text,mdl:reply.model});
   }catch(e){
     _aiPush(cid,{r:'e',t:e&&e.message?e.message:'Request failed — check your connection'});
@@ -11528,7 +11541,13 @@ async function aiRetry(){
 // that permanently pinned a device to an older model once it answered — after
 // prepending a newer flagship (e.g. gemini-3.6-flash) the remembered older
 // model kept winning and the new one was never reached. Best-first, every time.
-async function _aiFetch(body){
+// opts.timeout: ms allowed per request (default 45 s; a hung model is abandoned
+// and the next one tried). opts.deadline: ms for the whole attempt across
+// models (default 90 s). Both abort the fetch itself, so nothing keeps running
+// (and spending the allowance) after the caller has given up (v4.9.9).
+async function _aiFetch(body,opts){
+  opts=opts||{};
+  const perReq=opts.timeout||45000,until=Date.now()+(opts.deadline||90000);
   if(!_aiKey())throw new Error('No API key saved — open Keys… settings');
   // A user's own key goes straight to Google. Everyone else goes through the
   // AI service; the legacy shared key is used directly only while the service
@@ -11549,14 +11568,24 @@ async function _aiFetch(body){
     const call=async payload=>{
       let res;
       const t=target();
+      const left=until-Date.now();
+      if(left<=0)return {err:'timed out',timedOut:true};
+      const ac=new AbortController(),tm=setTimeout(()=>ac.abort(),Math.min(perReq,left));
       try{
-        res=await fetch(t.url,{method:'POST',headers:t.headers,body:JSON.stringify(payload)});
+        res=await fetch(t.url,{method:'POST',headers:t.headers,body:JSON.stringify(payload),signal:ac.signal});
       }catch(e){
+        clearTimeout(tm);
+        if(ac.signal.aborted)return {err:'timed out',timedOut:true};
         // Service unreachable: fall back to the legacy shared key if this
         // device still has one, and stop trying the service for a while.
         if(viaProxy&&_aiSharedKey()){_aiProxyDownAt=Date.now();viaProxy=false;return call(payload);}
         return {net:true};
       }
+      clearTimeout(tm);
+      // A worker that tries the fallback models itself (x-apowo-cascade) has
+      // already been through the whole list: asking it again per model would
+      // only count against the daily allowance once more for each.
+      const cascaded=viaProxy&&!!res.headers.get('x-apowo-cascade');
       if(viaProxy){
         const j=res.ok?null:await res.clone().json().catch(()=>({}));
         const msg=j&&j.error&&j.error.message;
@@ -11571,16 +11600,16 @@ async function _aiFetch(body){
       }
       if(res.status===429){
         const j=await res.json().catch(()=>({}));
-        return {err:'rate limited'+(j.error&&j.error.message?': '+j.error.message:''),rateLimited:true};
+        return {err:'rate limited'+(j.error&&j.error.message?': '+j.error.message:''),rateLimited:true,final:cascaded};
       }
-      if(!res.ok){const j=await res.json().catch(()=>({}));return {err:(j.error&&j.error.message)||('HTTP '+res.status)};}
-      return {json:await res.json().catch(()=>null)};
+      if(!res.ok){const j=await res.json().catch(()=>({}));return {err:(j.error&&j.error.message)||('HTTP '+res.status),final:cascaded};}
+      return {json:await res.json().catch(()=>null),model:viaProxy&&res.headers.get('x-apowo-model')||''};
     };
     const read=j=>{const c=j&&j.candidates&&j.candidates[0];return {text:c&&c.content&&c.content.parts?c.content.parts.map(p=>p.text||'').join(''):'',reason:(c&&c.finishReason)||''};};
 
     const first=await call(body);
     if(first.net){lastErr='network error — are you online?';allRateLimited=false;continue;}
-    if(first.err){lastErr=first.err;if(!first.rateLimited)allRateLimited=false;continue;}
+    if(first.err){lastErr=first.err;if(!first.rateLimited)allRateLimited=false;if(first.final||Date.now()>=until)break;continue;}
     let {text,reason}=read(first.json);
     if(!text.trim()){lastErr=reason||'empty response';allRateLimited=false;continue;}
 
@@ -11599,7 +11628,7 @@ async function _aiFetch(body){
       if(!nx.text.trim())break;
       text+=nx.text;seg=nx.text;reason=nx.reason;
     }
-    return {text:text.trim(),model};
+    return {text:text.trim(),model:first.model||model};
   }
   if(allRateLimited)throw new Error('Gemini rate limit reached on every available model ('+models.join(', ')+') — try again in a bit.');
   throw new Error('Gemini request failed: '+lastErr);

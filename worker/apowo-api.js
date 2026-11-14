@@ -10,7 +10,11 @@
 //
 // Limits (all optional; each one is skipped when its binding is missing):
 //   BURST  Rate Limiting binding: requests per minute per person.
-//   LIMITS KV namespace: AI requests per day per person.
+//   USAGE  D1 database: AI requests per day per person, and for everyone
+//          together (DAILY_TOTAL). Free plan: 100,000 writes a day.
+//   LIMITS KV namespace: the older per-day counter, used only when USAGE is
+//          missing. Free plan: 1,000 writes a day, after which it stops
+//          counting (AI keeps working, unlimited).
 // "Person" is the Firebase account when the app sends a valid ID token, and
 // the network address otherwise.
 //
@@ -19,6 +23,15 @@
 //                   the next one is tried when a key is rate limited.
 //   DAILY_SIGNED_IN plain text, default 150. AI requests/day per account.
 //   DAILY_SIGNED_OUT plain text, default 30. AI requests/day per address.
+//   DAILY_TOTAL     plain text, optional. AI requests/day for everyone
+//                   together (needs USAGE). Set it a little under the Gemini
+//                   project's daily quota so people get a clear message
+//                   instead of Google's errors.
+//
+// Models (v4.9.9): the app asks for its preferred model; when that one is
+// rate limited, missing or failing, this worker tries the rest of MODELS
+// itself and says so with x-apowo-cascade, so one question is one request
+// against the allowance. x-apowo-model names the model that answered.
 
 const PROJECT_ID = 'spendwise-d6393';
 const ALLOWED_ORIGINS = ['https://apowo.app'];
@@ -26,6 +39,8 @@ const LOCAL_ORIGIN = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
 const MAX_AI_BODY = 3 * 1024 * 1024;   // the app sends the user's whole history as context
 const MAX_REPORT_BODY = 8 * 1024;
 const MODEL_RE = /^gemini-[a-z0-9.\-]{1,40}$/;
+// Keep in step with AI_MODELS in app.js (best first).
+const MODELS = ['gemini-flash-latest', 'gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash'];
 
 export default {
   async fetch(request, env, ctx) {
@@ -35,7 +50,7 @@ export default {
       'Access-Control-Allow-Origin': origin,
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-      'Access-Control-Expose-Headers': 'x-apowo-refusal',
+      'Access-Control-Expose-Headers': 'x-apowo-refusal, x-apowo-model, x-apowo-cascade',
       'Access-Control-Max-Age': '86400',
       'Vary': 'Origin',
     } : {};
@@ -58,7 +73,7 @@ export default {
     try {
       if (url.pathname === '/report') return await report(request, env, cors);
       const m = /^\/gemini\/([^/]+)$/.exec(url.pathname);
-      if (m) return await gemini(request, env, cors, decodeURIComponent(m[1]));
+      if (m) return await gemini(request, env, ctx, cors, decodeURIComponent(m[1]));
       return json({ error: { message: 'Not found.' } }, 404, cors);
     } catch (e) {
       console.error('worker error', e && e.stack || e);
@@ -68,10 +83,13 @@ export default {
 };
 
 // ── AI ─────────────────────────────────────────────────────────────────────
-async function gemini(request, env, cors, model) {
+async function gemini(request, env, ctx, cors, model) {
   if (!MODEL_RE.test(model)) return json({ error: { message: 'Unknown model.' } }, 400, cors);
   const keys = String(env.GEMINI_KEYS || '').split(',').map(s => s.trim()).filter(Boolean);
   if (!keys.length) return refuse('The AI service is not set up yet.', 503, cors);
+
+  const len = Number(request.headers.get('Content-Length') || 0);
+  if (len > MAX_AI_BODY) return json({ error: { message: 'Request too large.' } }, 413, cors);
 
   // Who is asking: a verified account, or else the network address.
   let who = 'ip:' + (request.headers.get('CF-Connecting-IP') || 'unknown');
@@ -87,47 +105,103 @@ async function gemini(request, env, cors, model) {
     const { success } = await env.BURST.limit({ key: who });
     if (!success) return refuse('Too many AI requests at once. Wait a minute and try again.', 429, cors);
   }
+  const body = await request.text();
+  if (body.length > MAX_AI_BODY) return json({ error: { message: 'Request too large.' } }, 413, cors);
+
+  const over = await dailyAllowance(env, ctx, who, signedIn);
+  if (over) return refuse(over, 429, cors);
+
+  // Try the asked-for model, then the rest of MODELS after it. Within a model,
+  // try each key; a rate-limited (429) or rejected (401/403) key moves to the
+  // next key, a missing model (404) or a server error (5xx) to the next model.
+  // A bad request (400) is the request's fault: return it as it is.
+  const start = MODELS.indexOf(model);
+  const chain = start < 0 ? [model] : MODELS.slice(start);
+  let res = null, keyTrouble = false;
+  for (const m of chain) {
+    for (const key of keys) {
+      try {
+        res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+          body,
+        });
+      } catch (e) { res = null; break; }   // Google unreachable: try the next model
+      if (res.ok) return answer(res, m, cors);
+      if (res.status === 400) return answer(res, m, cors);
+      if (res.status === 401 || res.status === 403) {
+        keyTrouble = true;
+        console.error('Gemini rejected a shared key', res.status, m, await res.text());
+        continue;
+      }
+      if (res.status !== 429) break;       // 404 / 5xx: this model, whatever the key
+    }
+  }
+  // Problems with the shared key are ours, not the user's: don't let the app
+  // tell them to fix "their" key.
+  if (keyTrouble && (!res || res.status === 401 || res.status === 403)) {
+    return json({ error: { message: 'The shared AI key needs attention.' } }, 502, { ...cors, 'x-apowo-cascade': '1' });
+  }
+  if (!res) return json({ error: { message: 'The AI service could not reach Google.' } }, 502, { ...cors, 'x-apowo-cascade': '1' });
+  return answer(res, chain[chain.length - 1], cors);
+}
+function answer(res, model, cors) {
+  return new Response(res.body, {
+    status: res.status,
+    headers: {
+      'Content-Type': 'application/json', 'Cache-Control': 'no-store',
+      'x-apowo-model': model, 'x-apowo-cascade': '1', ...cors,
+    },
+  });
+}
+
+// ── Daily allowance ────────────────────────────────────────────────────────
+// Returns a refusal message when today's allowance is used up, else ''.
+// Counters reset at midnight UTC. A storage failure never blocks AI: it is
+// logged and the request goes through (the per-minute limit still applies).
+let usageTableReady = false;
+async function dailyAllowance(env, ctx, who, signedIn) {
+  const cap = Number(signedIn ? env.DAILY_SIGNED_IN || 150 : env.DAILY_SIGNED_OUT || 30);
+  const total = Number(env.DAILY_TOTAL || 0);
+  const day = new Date().toISOString().slice(0, 10);
+  const mine = signedIn
+    ? `You've used today's ${cap} AI requests. They reset at midnight UTC, or add your own free Gemini key under Keys….`
+    : `Today's AI allowance for signed-out use is used up. Sign in for more, or add your own free Gemini key under Keys….`;
+  const everyone = `apowo's AI has reached today's limit for everyone. It resets at midnight UTC, or add your own free Gemini key under Keys….`;
+
+  if (env.USAGE) {
+    try {
+      const db = env.USAGE;
+      if (!usageTableReady) {
+        await db.prepare('CREATE TABLE IF NOT EXISTS ai_usage (k TEXT PRIMARY KEY, n INTEGER NOT NULL, day TEXT NOT NULL)').run();
+        usageTableReady = true;
+      }
+      // One statement adds one and returns the new count, so two requests at
+      // the same moment can't both slip under the cap.
+      const bump = k => db.prepare('INSERT INTO ai_usage (k, n, day) VALUES (?1, 1, ?2) ON CONFLICT(k) DO UPDATE SET n = n + 1 RETURNING n').bind(k, day).first('n');
+      if ((await bump(`ai:${day}:${who}`)) > cap) return mine;
+      if (total > 0 && (await bump(`ai:${day}:all`)) > total) return everyone;
+      // Now and then, clear counters older than yesterday.
+      if (Math.random() < 0.02) {
+        const old = new Date(Date.now() - 2 * 86400e3).toISOString().slice(0, 10);
+        ctx.waitUntil(db.prepare('DELETE FROM ai_usage WHERE day < ?1').bind(old).run().catch(e => console.warn('usage cleanup failed', e && e.message)));
+      }
+      return '';
+    } catch (e) {
+      console.warn('daily limit not recorded (D1)', e && e.message);
+      return '';
+    }
+  }
   if (env.LIMITS) {
-    const cap = Number(signedIn ? env.DAILY_SIGNED_IN || 150 : env.DAILY_SIGNED_OUT || 30);
-    const day = new Date().toISOString().slice(0, 10);
     const k = `ai:${day}:${who}`;
     const used = Number(await env.LIMITS.get(k)) || 0;
-    if (used >= cap) {
-      return refuse(signedIn
-        ? `You've used today's ${cap} AI requests. They reset at midnight UTC, or add your own free Gemini key under Keys….`
-        : `Today's AI allowance for signed-out use is used up. Sign in for more, or add your own free Gemini key under Keys….`, 429, cors);
-    }
+    if (used >= cap) return mine;
     // Approximate (KV is eventually consistent), which is fine for a daily cap.
     // A failed write (e.g. the free tier's 1,000 writes/day) must not block AI.
     try { await env.LIMITS.put(k, String(used + 1), { expirationTtl: 2 * 86400 }); }
     catch (e) { console.warn('daily limit not recorded', e && e.message); }
   }
-
-  const len = Number(request.headers.get('Content-Length') || 0);
-  if (len > MAX_AI_BODY) return json({ error: { message: 'Request too large.' } }, 413, cors);
-  const body = await request.text();
-  if (body.length > MAX_AI_BODY) return json({ error: { message: 'Request too large.' } }, 413, cors);
-
-  // Try each key; move to the next only when one is rate limited.
-  let res;
-  for (const key of keys) {
-    res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
-      body,
-    });
-    if (res.status !== 429) break;
-  }
-  // Problems with the shared key are ours, not the user's: don't let the app
-  // tell them to fix "their" key.
-  if (res.status === 401 || res.status === 403) {
-    console.error('Gemini rejected the shared key', res.status, await res.text());
-    return json({ error: { message: 'The shared AI key needs attention.' } }, 502, cors);
-  }
-  return new Response(res.body, {
-    status: res.status,
-    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...cors },
-  });
+  return '';
 }
 
 // ── Crash reports ──────────────────────────────────────────────────────────
